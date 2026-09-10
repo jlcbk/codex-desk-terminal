@@ -37,9 +37,13 @@
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| P5.1 | A3（子代理） | doing | P1.4（done）；P4.4 仅逻辑参数（§7.2 初值可注入，硬件校准保持阻塞） | - | - | shared/power/（进行中） | 无线策略实测归 P5.2 |
+| P5.1 | A3（子代理） | done | P1.4（done）；P4.4 仅逻辑参数（硬件校准保持阻塞） | （本次提交） | `sh scripts/build_shared.sh`（A0 复跑 36+101=137 PASS exit 0；ASan 版 101 PASS 无报告） | shared/power/{cdt_power.h,cdt_power.c}、tests/shared/test_power.c、artifacts/power/ | A0 三裁决：BATTERY_FAULT 冻结为 flag+动作位（不增枚举，§7.3 定义其为入 CRITICAL 路径）；BOOT_CHECK 迟滞带不停留问题=自消解路径（放电→critical→睡；充电→recovery→active），P5.4 真机观察；CRITICAL 单拍保持满足"成立后 2s 内"（≤1s 显示+≤1s 末帧）。另修复 build_shared.sh 泄漏检查 BRE→ERE（此前空转，已真实复跑） |
 
 ## P2：完整页面与自动回归（进行中）
+
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| P2.4（工具部分） | A5（子代理） | doing | P1.5 契约（done） | - | - | scripts/check_ui.py（进行中，合成图自测） | golden 生成与 A0 审核归 P2 集成 |
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
