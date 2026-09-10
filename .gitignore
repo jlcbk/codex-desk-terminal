@@ -18,3 +18,7 @@ config/local/
 
 # 协议探针临时输出（脱敏后的样本才允许入库 docs/proto-samples/）
 /tmp-probe/
+
+# IDF component manager 生成缓存（由 dependencies.lock 锁定版本，本体不入库）
+firmware/examples/*/managed_components/
+firmware/managed_components/
