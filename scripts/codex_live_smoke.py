@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
-"""P3.1 live smoke — 真实 codex app-server 受控 turn + 额度读取（不在 pytest 默认集）。
+"""P3.1/P3.2 live smoke — 真实 codex app-server 受控 turn（不在 pytest 默认集）。
 
-对真实 codex CLI（锁定 0.152.0）做一次最小验证：
+对真实 codex CLI（锁定 0.152.0）做最小验证：
 
 1. 启动自己的 stdio app-server（initialize + experimentalApi）
 2. 能力检测 + account/rateLimits/read（额度实测）
 3. 隔离临时 cwd 中建 ephemeral thread（readOnly 沙箱 + networkAccess=false +
-   approvalPolicy=never + 固定模型 gpt-5.6-sol），跑一个受控 turn："只回复 ok"
+   approvalPolicy=never + 固定模型 gpt-5.6-sol），跑一个受控 turn（默认 "只回复 ok"）
 4. 产物（快照序列、脱敏原始日志、报告）写入 artifacts/codex/
 5. 落盘后做脱敏自检（home 路径 / 邮箱 / API key 模式不得出现）
 
-安全红线与 adapter 一致：绝不 resume/触碰已存在 thread；绝不 approve/reject
-（审批请求只接收不回应）；会话只在隔离临时目录；每次交互带超时；结束后
-清理进程与临时目录。
+P3.2 场景（映射收尾的 live 实证）：
+
+- 默认      ：受控 turn 完成（P3.1 基线，completed 路径）。
+- --interrupt-after S：turn 启动 S 秒后仍无终态就 interrupt 自己的 turn
+  （取消路径：turn/completed interrupted → idle+cancelled）。
+- 自定义 --prompt ：如 plan 实证（"分三步…" 触发 turn/plan/updated）或
+  user-input 实证（要求模型调用 requestUserInput / 触发 waitingOnUserInput）。
+
+安全红线与 adapter 一致：绝不 resume/触碰已存在 thread；绝不 approve/reject/answer
+（server→client 请求只接收不回应，等待时只 interrupt 自己的 turn）；会话只在隔离
+临时目录；每次交互带超时；结束后清理进程与临时目录。
 
 用法：
     python3 scripts/codex_live_smoke.py [--out DIR] [--codex BIN] [--model M]
-返回：adapter 退出码（0 = turn completed；见 bridge/sources/codex.py 退出码表）。
+        [--prompt TEXT] [--interrupt-after S] [--label NAME] [--turn-timeout S]
+返回：adapter 退出码（见 bridge/sources/codex.py 退出码表：
+0 completed / 3 failed / 4 interrupted(=cancelled) / 5 超时无终态 /
+6 能力缺失 / 7 进程反复退出 / 8 脱敏自检失败）。
 """
 
 from __future__ import annotations
@@ -78,16 +89,47 @@ def main() -> int:
     parser.add_argument("--codex", default="codex", help="codex CLI binary")
     parser.add_argument("--model", default=codex_mod.DEFAULT_MODEL,
                         help="model to pin (0.152.0 rejects the account default)")
+    parser.add_argument("--prompt", default=PROMPT,
+                        help="controlled turn prompt (default: 只回复 ok)")
+    parser.add_argument("--interrupt-after", type=float, default=0.0, dest="interrupt_after",
+                        help="if the turn has no terminal status after S seconds, "
+                             "interrupt our own turn (cancel-path evidence); 0 = off")
+    parser.add_argument("--collab-mode", default=None, dest="collab_mode",
+                        choices=["plan", "default"],
+                        help="turn/start collaborationMode (schema ModeKind); "
+                             "'plan' induces the model's plan tool (P3.2 evidence)")
+    parser.add_argument("--thread-config", default=None, dest="thread_config",
+                        help="JSON object merged into thread/start `config` "
+                             "(e.g. feature flags); never used to pass credentials")
+    parser.add_argument("--label", default=None, dest="run_label",
+                        help="run label recorded in report.json (evidence metadata)")
+    parser.add_argument("--task-label", default="P3.2", dest="task_label",
+                        help="task id recorded in report.json")
     parser.add_argument("--turn-timeout", type=float, default=120.0)
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    print("codex live smoke: codex=%s model=%s prompt=<content len=%d> out=%s"
-          % (args.codex, args.model, len(PROMPT), args.out), file=sys.stderr)
+    print("codex live smoke: codex=%s model=%s prompt=<content len=%d> "
+          "interrupt_after=%s out=%s"
+          % (args.codex, args.model, len(args.prompt), args.interrupt_after,
+             args.out), file=sys.stderr)
+
+    thread_config = None
+    if args.thread_config:
+        try:
+            thread_config = json.loads(args.thread_config)
+        except ValueError as exc:
+            print("bridge: --thread-config is not valid JSON: %s" % exc, file=sys.stderr)
+            return 2
+        if not isinstance(thread_config, dict):
+            print("bridge: --thread-config must be a JSON object", file=sys.stderr)
+            return 2
 
     adapter = codex_mod.CodexAdapter(
-        prompt=PROMPT, model=args.model, codex_bin=args.codex,
-        turn_timeout=args.turn_timeout,
+        prompt=args.prompt, model=args.model, codex_bin=args.codex,
+        turn_timeout=args.turn_timeout, interrupt_after_s=args.interrupt_after,
+        collaboration_mode=args.collab_mode, thread_config=thread_config,
+        task_label=args.task_label, run_label=args.run_label,
         epoch="codex-smoke-%d" % int(time.time() * 1000),
     )
     result = adapter.run()
@@ -96,6 +138,7 @@ def main() -> int:
     last = result.snapshots[-1] if result.snapshots else {}
     usage = last.get("usage") or {}
     summary = {
+        "run_label": args.run_label,
         "exit_code": result.exit_code,
         "exit_reason": result.exit_reason,
         "bridge_epoch": result.report["bridge_epoch"],

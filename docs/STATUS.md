@@ -31,7 +31,7 @@
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
 | P3.1 | A1（子代理） | done | P0.2+P1.1（done） | （本次提交） | `pytest tests/bridge -q`（A0 复跑 76 passed exit 0）；`scripts/codex_live_smoke.py`（A0 复跑 exit 0，13 快照）；**live 快照→C 端交叉验证 33/33 PASS**；脱敏扫描唯一命中为 desk-terminal 正则误报 | bridge/sources/codex.py、bridge/codex_rpc.py、bridge/redact.py、tests/bridge/test_codex_adapter.py、scripts/codex_live_smoke.py、artifacts/codex/ | A0 认可 test_determinism 排除 IO 模块（纯度扫描不应覆盖 adapter）；重连缺线程老化策略归 P3.2；requestUserInput/turn/plan/updated 待 P3.2 实证；P3.6 维持 blocked |
-| P3.2 | A1（子代理） | doing | P3.1（done） | - | - | bridge/sources/codex.py 扩展（进行中） | 老化策略仅提案不改冻结语义 |
+| P3.2 | A1（子代理） | done | P3.1（done） | （本次提交） | `pytest tests/bridge -q`（A0 复跑全量 89 passed exit 0，含取消消歧 deselect 的门禁项）；live user-input 17 快照/cancel 9 快照语义抽查吻合 §3 | bridge/sources/codex.py、tests/bridge/（+15 测试）、artifacts/codex/p32-*（6 组脱敏自检过） | A0 裁决：①transports/ 入纯度排除（IO 层）；②老化采纳提案 C（重连重建 StateEngine=新 epoch 全量替换，零契约变化），实现归下一 A1 波次，A/B 备案；③plan live 未触发=诚实否定证据，CLI 升级时重测；④item/plan/delta 形态缺口挂契约观察项 |
 | P3.3（loopback） | A4-W（子代理） | doing | P0.5+P1.4（done） | - | - | bridge/transports/wss/（进行中） | 真机 LAN/TLS 实测后置 |
 | P3.4（host 阶段） | A4-B（子代理） | doing | P0.5+P1.4（done） | - | - | shared/transport/ 重组器（进行中） | 真机 GATT/配对后置 |
 | P3.5 | - | todo | P3.3–P3.4 | - | - | - | 双 transport 齐后派 |

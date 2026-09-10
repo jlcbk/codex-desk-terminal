@@ -37,6 +37,13 @@ CLI（经 python -m bridge 分发）::
     python -m bridge --source codex --prompt "只回复 ok" --out DIR --live
     python -m bridge --source codex --prompt "..." --out DIR   # 无 --live 为 dry-run
 
+P3.2 补充（映射收尾）：
+- ``interrupt_after_s``：turn 启动该秒数后仍无终态则主动 turn/interrupt 自己的
+  受控 turn（取消路径 live 实证用；0 = 关闭，超时兜底仍由 turn_timeout 负责）。
+- ``item/tool/requestUserInput`` 摘要取 questions[0].question（0.152.0 v1 schema
+  ToolRequestUserInputParams），其余审批族回退原键序；
+- ``task_label`` / ``run_label`` 只进运行报告（evidence 元数据），不影响协议快照。
+
 断连/重连：app-server 进程退出 → 指数退避重启（1/2/4/8/16/30s 上限，
 INTERFACES §6；+抖动）；重连后经 StateEngine 产生 source_disconnected /
 source_reconnected 语义事件（source.connected 翻转、stale 来回）。
@@ -433,6 +440,15 @@ class CodexEventMapper:
 
     @staticmethod
     def _approval_summary(method, params):
+        # item/tool/requestUserInput 的载荷是 questions[{header,id,question,options}]
+        # （v1 schema ToolRequestUserInputParams），原键序里没有可用的短文本键。
+        if method == "item/tool/requestUserInput":
+            questions = params.get("questions")
+            if isinstance(questions, list) and questions \
+                    and isinstance(questions[0], dict):
+                question = questions[0].get("question")
+                if isinstance(question, str) and question.strip():
+                    return scrub_text(question, 192)
         for key in ("command", "path", "query", "summary", "message", "reason", "prompt"):
             value = params.get(key)
             if isinstance(value, str) and value.strip():
@@ -485,6 +501,10 @@ class CodexAdapter:
                  backoff=DEFAULT_BACKOFF, jitter: float = 0.15,
                  connect_timeout: float = 15.0, start_timeout: float = 30.0,
                  turn_timeout: float = 120.0, interrupt_grace: float = 10.0,
+                 interrupt_after_s: float = 0.0,
+                 collaboration_mode: Optional[str] = None,
+                 thread_config: Optional[dict] = None,
+                 task_label: str = "P3.1", run_label: Optional[str] = None,
                  epoch: Optional[str] = None, rng=None) -> None:
         if not prompt or not isinstance(prompt, str):
             raise ValueError("prompt must be a non-empty string")
@@ -501,6 +521,22 @@ class CodexAdapter:
         self.start_timeout = float(start_timeout)
         self.turn_timeout = float(turn_timeout)
         self.interrupt_grace = float(interrupt_grace)
+        # P3.2 取消路径实证：turn 启动 N 秒后仍无终态就 interrupt 自己的受控 turn。
+        # 0 = 关闭（默认；停滞兜底仍走 turn_timeout）。
+        self.interrupt_after_s = max(0.0, float(interrupt_after_s))
+        # P3.2 plan 实证：turn/start 的 collaborationMode（schema ModeKind:
+        # plan|default）。None = 不传（上游默认）；settings.model 恒用固定模型。
+        if collaboration_mode is not None and collaboration_mode not in ("plan", "default"):
+            raise ValueError("collaboration_mode must be 'plan' or 'default' (schema "
+                             "ModeKind), got %r" % collaboration_mode)
+        self.collaboration_mode = collaboration_mode
+        # P3.2 实证辅助：thread/start 的 config 覆盖（schema: object|null）。只允许
+        # 显式传入的键进入 ephemeral 会话；不做任何凭证/环境的自动注入。
+        if thread_config is not None and not isinstance(thread_config, dict):
+            raise ValueError("thread_config must be a dict (thread/start config)")
+        self.thread_config = dict(thread_config) if thread_config else None
+        self.task_label = task_label
+        self.run_label = run_label
         self.epoch = epoch
         self._rng = rng or random.Random()
         self.snapshots: list = []
@@ -646,6 +682,8 @@ class CodexAdapter:
             "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
             "model": self.model,
         }
+        if self.thread_config:
+            thread_params["config"] = self.thread_config
         self._log_raw({"dir": "out", "method": "thread/start",
                        "payload": scrub({"params": thread_params})})
         try:
@@ -672,11 +710,16 @@ class CodexAdapter:
                        "payload": scrub({"params": {"threadId": thread_id,
                                                     "input": [{"type": "text",
                                                                "text": self.prompt}]}})})
+        turn_params = {"threadId": thread_id,
+                       "input": [{"type": "text", "text": self.prompt}]}
+        if self.collaboration_mode is not None:
+            turn_params["collaborationMode"] = {
+                "mode": self.collaboration_mode,
+                "settings": {"model": self.model},
+            }
         try:
-            turn = client.request(
-                "turn/start",
-                {"threadId": thread_id, "input": [{"type": "text", "text": self.prompt}]},
-                timeout=self.start_timeout)
+            turn = client.request("turn/start", turn_params,
+                                  timeout=self.start_timeout)
         except RpcError as exc:
             if exc.code == -32601:
                 attempt.ended_by = "capability_missing"
@@ -695,6 +738,9 @@ class CodexAdapter:
 
         # ---- 事件泵：直到本 turn 终态 / 进程退出 / 超时 ----
         deadline = self._mono_ms() + int(self.turn_timeout * 1000)
+        if self.interrupt_after_s > 0:
+            # P3.2 取消路径：限定"无终态等待窗口"，到点即走下方 interrupt 兜底。
+            deadline = min(deadline, self._mono_ms() + int(self.interrupt_after_s * 1000))
         while True:
             if not client.alive():
                 attempt.ended_by = "process_exit"
@@ -717,7 +763,10 @@ class CodexAdapter:
                     turn_obj2 = params.get("turn") or {}
                     if params.get("threadId") == thread_id and turn_obj2.get("id") == turn_id:
                         attempt.ended_by = "turn_completed"
-                        attempt.turn_status = turn_obj2.get("status")
+                        # 归一化（interrupted→cancelled），run() 的退出码表按
+                        # 规范化终态查表；未知值保留原样供报告排查。
+                        attempt.turn_status = _turn_status_normalize(
+                            turn_obj2.get("status")) or turn_obj2.get("status")
                         return
                 elif method == "error":
                     attempt.ended_by = "error_notification"
@@ -747,7 +796,8 @@ class CodexAdapter:
                     turn_obj2 = params.get("turn") or {}
                     if params.get("threadId") == thread_id and turn_obj2.get("id") == turn_id:
                         attempt.ended_by = "turn_completed"
-                        attempt.turn_status = turn_obj2.get("status")
+                        attempt.turn_status = _turn_status_normalize(
+                            turn_obj2.get("status")) or turn_obj2.get("status")
                         return
             if not client.alive():
                 # 宽限期内进程又死了：按进程退出处理，交给外层退避重启。
@@ -798,8 +848,8 @@ class CodexAdapter:
 
     def _build_report(self, exit_code: int, exit_reason: str) -> dict:
         last = self.snapshots[-1] if self.snapshots else None
-        return {
-            "task": "P3.1",
+        report = {
+            "task": self.task_label,
             "bridge_epoch": self.epoch,
             "source_kind": SOURCE_BRIDGE_OWNED,
             "model": self.model,
@@ -815,6 +865,9 @@ class CodexAdapter:
             "redaction": "raw IO log scrubbed via bridge/redact.py; "
                          "credentials/emails/home paths/user content excluded",
         }
+        if self.run_label is not None:
+            report["run_label"] = self.run_label
+        return report
 
 
 # ---- CLI / 工件 ------------------------------------------------------------

@@ -120,6 +120,17 @@ FAKE_SERVER = textwrap.dedent(
                     respond(mid, {"turn": {"id": phase["turn_id"], "status": "inProgress"}})
                 elif meth == "turn/interrupt":
                     respond(mid, {})
+                    if phase.get("interrupt_result") == "interrupted":
+                        # P3.2 取消路径：interrupt 后上游给出 interrupted 终态
+                        # （0.152.0 真实行为，探针 6b 先例）。
+                        schedule([
+                            {"kind": "notification", "delay": 0.15, "raw": {
+                                "jsonrpc": "2.0", "method": "turn/completed",
+                                "params": {"threadId": phase["thread_id"],
+                                           "turn": {"id": phase["turn_id"],
+                                                    "status": "interrupted"}},
+                                "emittedAtMs": 1789015000900}},
+                        ])
                 else:
                     respond(mid, None, {"code": -32601, "message": "Method not found"})
             elif "result" in msg or "error" in msg:
@@ -251,9 +262,11 @@ def happy_steps(thread_id, turn_id):
     return s.steps
 
 
-def phase(thread_id, turn_id, steps, rate_limits="ok", thread_start="ok"):
+def phase(thread_id, turn_id, steps, rate_limits="ok", thread_start="ok",
+          interrupt_result=None):
     return {"rate_limits": rate_limits, "thread_start": thread_start,
-            "thread_id": thread_id, "turn_id": turn_id, "steps": steps}
+            "thread_id": thread_id, "turn_id": turn_id, "steps": steps,
+            "interrupt_result": interrupt_result}
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +462,206 @@ def test_turn_timeout_interrupts_own_turn_only(fake_server_path, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# P3.2：错误/取消路径、等待解除语义、plan/updated 映射（adapter × 假 app-server）
+# ---------------------------------------------------------------------------
+
+def _base_start(thread_id, turn_id):
+    """thread/started → active → turn/started 的开头三步（真实样本）。"""
+    s = Script()
+    e = _load("events/thread.started.json")
+    e["params"]["thread"]["id"] = thread_id
+    e["params"]["thread"]["cwd"] = "/tmp/codex-fake-cwd"
+    s.add("thread/started", e["params"])
+    e = _load("events/thread.status.changed.active.json")
+    e["params"]["threadId"] = thread_id
+    s.add("thread/status/changed", e["params"])
+    e = _load("events/turn.started.json")
+    e["params"]["threadId"] = thread_id
+    e["params"]["turn"]["id"] = turn_id
+    s.add("turn/started", e["params"])
+    return s
+
+
+def _turn_completed_step(thread_id, turn_id, status, error_message=None):
+    turn = {"id": turn_id, "status": status}
+    if error_message is not None:
+        turn["error"] = {"message": error_message}
+    return {"kind": "notification", "delay": 0.05,
+            "raw": {"jsonrpc": "2.0", "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": turn},
+                    "emittedAtMs": 1789015000900}}
+
+
+def test_failed_turn_maps_to_error_not_done(validator, fake_server_path, tmp_path):
+    """turn/completed(failed) → error 终态：失败绝不显示 DONE（P3.2 验收）。"""
+    s = _base_start("th-fail", "turn-fail")
+    s.raw(_turn_completed_step("th-fail", "turn-fail", "failed",
+                               "model gpt-6-astra requires a newer Codex"))
+    adapter, _ = make_adapter(
+        fake_server_path, tmp_path, [phase("th-fail", "turn-fail", s.steps)])
+    result = adapter.run()
+
+    assert result.exit_code == codex_mod.EXIT_TURN_FAILED, result.report
+    snaps = result.snapshots
+    for snap in snaps:
+        errors = list(validator.iter_errors(snap))
+        assert not errors, f"seq={snap['seq']}: {errors[0].message}"
+        assert_invariants(snap)
+    assert codex_mod.state_flow(snaps)[-1] == (snaps[-1]["seq"], "error")
+    last = snaps[-1]["threads"][0]
+    assert last["state"] == "error"
+    assert last["end_reason"] == "failed"
+    assert "gpt-6-astra" in last["activity"]      # 脱敏后的上游错误消息
+    assert all(t["state"] != "done" for t in snaps[-1]["threads"])
+    assert result.report["exit_reason"] == "turn_completed"
+
+
+def test_interrupted_turn_maps_to_idle_cancelled(validator, fake_server_path, tmp_path):
+    """interrupt 自己的受控 turn → interrupted → idle+cancelled（P3.2 取消路径）。"""
+    stalled = happy_steps("th-cancel", "turn-cancel")[:3]  # thread/状态/turn 开始
+    adapter, replies = make_adapter(
+        fake_server_path, tmp_path,
+        [phase("th-cancel", "turn-cancel", stalled, interrupt_result="interrupted")],
+        backoff=(), interrupt_after_s=0.4, interrupt_grace=2.0)
+    result = adapter.run()
+
+    assert result.exit_code == codex_mod.EXIT_TURN_INTERRUPTED, result.report
+    assert result.report["exit_reason"] == "turn_completed"
+    # attempts 记录规范化终态（interrupted→cancelled，与退出码表一致；
+    # 上游原始 status 在脱敏 IO 日志里可见）
+    assert result.report["attempts"][-1]["turn_status"] == "cancelled"
+    interrupted_raw = [e for e in result.raw_log
+                       if e.get("dir") == "in" and e.get("payload", {}).get("method") ==
+                       "turn/completed"
+                       and e["payload"].get("params", {}).get("turn", {}).get("status")
+                       == "interrupted"]
+    assert interrupted_raw, "upstream raw status 'interrupted' must be in the IO log"
+    snaps = result.snapshots
+    for snap in snaps:
+        errors = list(validator.iter_errors(snap))
+        assert not errors, f"seq={snap['seq']}: {errors[0].message}"
+        assert_invariants(snap)
+    last = snaps[-1]["threads"][0]
+    assert last["state"] == "idle"                 # cancelled 显示 idle
+    assert last["end_reason"] == "cancelled"       # end_reason 保留取消说明
+    assert last["activity"] == "已取消"
+    assert last["attention"] is None
+    # interrupt 只落在自己的受控 thread/turn 上
+    interrupts = [e for e in result.raw_log if e.get("method") == "turn/interrupt"]
+    assert interrupts and interrupts[0]["payload"]["params"] == \
+        {"threadId": "th-cancel", "turnId": "turn-cancel"}
+    assert not replies.exists()
+
+
+def test_waiting_on_user_input_flag_then_real_request_swap(validator, fake_server_path, tmp_path):
+    """waitingOnUserInput 标志 → 合成 needs_you pending（负数 id）；真实
+    item/tool/requestUserInput 到达后换真实项；取消才解除等待。"""
+    s = _base_start("th-ui", "turn-ui")
+    # 等待标志先到、无请求载荷（adapter 重启错过请求的形状）→ 合成 pending
+    s.add("thread/status/changed", {
+        "threadId": "th-ui",
+        "status": {"type": "active", "activeFlags": ["waitingOnUserInput"]}})
+    # 真实 requestUserInput（v1 schema ToolRequestUserInputParams 形状）
+    s.raw({"kind": "server_request", "delay": 0.1, "raw": {
+        "jsonrpc": "2.0", "id": 11, "method": "item/tool/requestUserInput",
+        "params": {"threadId": "th-ui", "turnId": "turn-ui", "isBlocking": True,
+                   "itemId": "tool-1",
+                   "questions": [{"header": "选择", "id": "q1",
+                                  "question": "选择 A 还是 B？",
+                                  "options": [{"label": "A", "description": "选项 A"},
+                                              {"label": "B", "description": "选项 B"}]}]}}})
+    adapter, replies = make_adapter(
+        fake_server_path, tmp_path,
+        [phase("th-ui", "turn-ui", s.steps, interrupt_result="interrupted")],
+        backoff=(), interrupt_after_s=0.8, interrupt_grace=2.0)
+    result = adapter.run()
+
+    assert result.exit_code == codex_mod.EXIT_TURN_INTERRUPTED, result.report
+    snaps = result.snapshots
+    for snap in snaps:
+        errors = list(validator.iter_errors(snap))
+        assert not errors, f"seq={snap['seq']}: {errors[0].message}"
+        assert_invariants(snap)
+
+    # 1) 标志合成：needs_you + 合成摘要（无请求载荷，只读等待）
+    synthetic = next(s for s in snaps if s["threads"]
+                     and s["threads"][0]["state"] == "needs_you")
+    att = synthetic["threads"][0]["attention"]
+    assert att["pending_count"] == 1
+    assert "等待用户输入" in att["summary"]
+
+    # 2) 真实请求换入：摘要用 questions[0].question；等待期间其他事件不解除
+    real = max((s for s in snaps if s["threads"]
+                and s["threads"][0]["state"] == "needs_you"),
+               key=lambda s: s["seq"])
+    assert "选择 A 还是 B" in real["threads"][0]["attention"]["summary"]
+    assert real["threads"][0]["waiting_ms"] >= 0
+
+    # 3) 等待只在明确取消后消除
+    last = snaps[-1]["threads"][0]
+    assert last["state"] == "idle" and last["end_reason"] == "cancelled"
+    assert last["attention"] is None
+    # 红线：requestUserInput 请求从未被回答
+    assert not replies.exists()
+    seen = result.report["server_requests_seen"]
+    assert {"method": "item/tool/requestUserInput", "id": 11} in seen
+
+
+def test_plan_updated_maps_to_plan_steps_integration(validator, fake_server_path, tmp_path):
+    """turn/plan/updated（含 inProgress）→ AppState plan.steps，状态映射按 §3；
+    PLAN UPDATE 保持 WORKING。"""
+    s = _base_start("th-plan", "turn-plan")
+    s.add("turn/plan/updated", {
+        "threadId": "th-plan", "turnId": "turn-plan", "explanation": "三步计划",
+        "plan": [{"step": "列出目录", "status": "pending"},
+                 {"step": "统计文件数", "status": "pending"},
+                 {"step": "总结", "status": "pending"}]})
+    s.add("item/started", {
+        "item": {"type": "commandExecution", "id": "exec-1", "command": "ls"},
+        "threadId": "th-plan", "turnId": "turn-plan",
+        "startedAtMs": 1789015000600})
+    s.add("turn/plan/updated", {
+        "threadId": "th-plan", "turnId": "turn-plan", "explanation": None,
+        "plan": [{"step": "列出目录", "status": "completed"},
+                 {"step": "统计文件数", "status": "inProgress"},
+                 {"step": "总结", "status": "pending"}]})
+    s.raw(_turn_completed_step("th-plan", "turn-plan", "completed"))
+    adapter, _ = make_adapter(
+        fake_server_path, tmp_path, [phase("th-plan", "turn-plan", s.steps)])
+    result = adapter.run()
+
+    assert result.exit_code == 0, result.report
+    snaps = result.snapshots
+    for snap in snaps:
+        errors = list(validator.iter_errors(snap))
+        assert not errors, f"seq={snap['seq']}: {errors[0].message}"
+        assert_invariants(snap)
+    # 第二次 plan 更新：inProgress → in_progress（adapter 归一化）
+    # （首个快照是 source_reconnected，threads 为空，需跳过；plan 在本 turn
+    #   的后续快照中一直保留，因此 plans 含终态前后的全部快照）
+    plans = [s for s in snaps
+             if s["threads"] and s["threads"][0]["plan"]["total"] > 0]
+    # 第一次更新：全部 pending
+    assert [st["status"] for st in plans[0]["threads"][0]["plan"]["steps"]] == \
+        ["pending", "pending", "pending"]
+    # 最终 plan：inProgress → in_progress（adapter 归一化，INTERFACES §3）
+    assert [st["status"] for st in plans[-1]["threads"][0]["plan"]["steps"]] == \
+        ["completed", "in_progress", "pending"]
+    assert [st["text"] for st in plans[-1]["threads"][0]["plan"]["steps"]] == \
+        ["列出目录", "统计文件数", "总结"]
+    assert plans[-1]["threads"][0]["plan"]["total"] == 3
+    assert plans[-1]["threads"][0]["plan"]["truncated"] is False
+    # PLAN UPDATE 是内容事件：更新期间保持 working（终态才变 done；
+    # 最后一个 plan 快照即 turn/completed，plan 内容随终态保留）
+    for snap in plans[:-1]:
+        assert snap["threads"][0]["state"] == "working"
+    last = snaps[-1]["threads"][0]
+    assert last["state"] == "done" and last["end_reason"] == "completed"
+    # 终态后 plan 保留（新 turn 才清旧计划；本 turn 未清）
+    assert last["plan"]["total"] == 3
+
+
+# ---------------------------------------------------------------------------
 # mapper 纯单测（无子进程）
 # ---------------------------------------------------------------------------
 
@@ -502,6 +715,74 @@ def test_mapper_waiting_flag_with_real_pending_no_double_count():
         at_ms=2)
     # 已有真实 pending：waiting 标志只确认 needs_you，不再合成第二个 pending
     assert [e.type for e in events] == ["thread_status_changed"]
+
+
+def test_mapper_request_user_input_summary_uses_question_text():
+    """requestUserInput 摘要取 questions[0].question（P3.2：该载荷没有 command 键）。"""
+    m = codex_mod.CodexEventMapper()
+    events = m.server_request({
+        "method": "item/tool/requestUserInput", "id": 11,
+        "params": {"threadId": "t", "turnId": "u", "isBlocking": True,
+                   "itemId": "tool-1",
+                   "questions": [{"header": "选择", "id": "q1",
+                                  "question": "选择 A 还是 B？", "options": None}]}})
+    assert [e.type for e in events] == ["approval_requested"]
+    assert events[0].summary == "选择 A 还是 B？"
+    # questions 缺失/为空 → 回退方法名兜底，不编造问题文本
+    events2 = m.server_request({
+        "method": "item/tool/requestUserInput", "id": 12,
+        "params": {"threadId": "t", "turnId": "u", "isBlocking": True,
+                   "itemId": "tool-2", "questions": []}})
+    assert events2[-1].summary == "审批请求：item/tool/requestUserInput"
+
+
+def test_mapper_thread_system_error_and_not_loaded():
+    m = codex_mod.CodexEventMapper()
+    events = m.notification(
+        "thread/status/changed",
+        {"threadId": "t", "status": {"type": "systemError"}}, at_ms=1)
+    assert [e.type for e in events] == ["thread_status_changed"]
+    assert events[0].status == "systemError"
+    # notLoaded（跨实例线程的常态）不产生事件
+    assert m.notification(
+        "thread/status/changed",
+        {"threadId": "t", "status": {"type": "notLoaded"}}, at_ms=2) == []
+
+
+def test_mapper_reducer_composition_late_events_after_cancel():
+    """mapper+reducer 组合：interrupted 终态后迟到的 item/审批请求不能复活等待
+    （P3.2 钉死项的 mapper 层佐证；reducer 门闸单测见 test_reducer_rules）。"""
+    from bridge.state.engine import StateEngine
+
+    m = codex_mod.CodexEventMapper()
+    engine = StateEngine("epoch-compose")
+    seq = []
+    seq += m.notification("thread/started",
+                          {"thread": {"id": "t", "cwd": "/tmp/x"}}, at_ms=0)
+    seq += m.notification("thread/status/changed",
+                          {"threadId": "t",
+                           "status": {"type": "active", "activeFlags": []}}, at_ms=10)
+    seq += m.notification("turn/started",
+                          {"threadId": "t", "turn": {"id": "u"}}, at_ms=20)
+    seq += m.notification("turn/completed",
+                          {"threadId": "t",
+                           "turn": {"id": "u", "status": "interrupted"}}, at_ms=30)
+    # 终态后迟到：缓冲/重排导致的事件（真实抓包中存在）
+    seq += m.notification(
+        "item/started",
+        {"threadId": "t", "turnId": "u",
+         "item": {"type": "commandExecution", "id": "i1", "command": "ls"}}, at_ms=40)
+    seq += m.server_request(
+        {"method": "item/commandExecution/requestApproval", "id": 5,
+         "params": {"threadId": "t", "turnId": "u", "command": "ls"}})
+
+    snap = {}
+    for e in seq:
+        snap = engine.apply(e, e.at_ms if e.at_ms is not None else 0)
+    rec = snap["threads"][0]
+    assert rec["state"] == "idle"
+    assert rec["end_reason"] == "cancelled"
+    assert rec["attention"] is None  # 迟到审批不复活等待
 
 
 def test_mapper_turn_interrupted_maps_to_cancelled():

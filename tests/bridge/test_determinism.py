@@ -51,13 +51,19 @@ def test_no_wall_clock_or_random_in_pure_modules():
     在此排除；其"事件→NormalizedEvent→快照"的确定性由
     tests/bridge/test_codex_adapter.py 的 mapper 与序列测试覆盖，
     engine 侧纯度仍由本测试与 bridge/state/ 全量扫描保证。
+
+    P3.2 后 A0 裁决（2026-09-10）：bridge/transports/ 整目录同为 IO 层
+    （网络收发、退避抖动），按同一理由排除纯度扫描；传输的确定性语义
+    （seq 单调、同字节输出）由 tests/transport/ 的协议测试覆盖。
     """
     banned = ("import time", "import datetime", "import random", "import uuid",
               "time.time", "time.monotonic", "datetime.now", "datetime.utcnow",
               "random.", "uuid.", "os.environ", "getenv")
     excluded = {"__main__.py", "codex.py", "codex_rpc.py"}
     targets = [pathlib.Path("/Users/cui/Documents/Projects/codex-desk-terminal/bridge")]
-    files = [p for p in targets[0].rglob("*.py") if p.name not in excluded]
+    files = [p for p in targets[0].rglob("*.py")
+             if p.name not in excluded
+             and "transports" not in p.parts]
     assert files, "bridge package must exist"
     for path in files:
         text = path.read_text(encoding="utf-8")

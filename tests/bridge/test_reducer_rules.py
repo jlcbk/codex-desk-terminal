@@ -279,3 +279,133 @@ def test_epoch_and_source_kind_validation():
         StateEngine("")
     with pytest.raises(ValueError):
         StateEngine("ok", source_kind="bogus")
+
+
+# ---- P3.2 钉死：等待只在明确 resolve/completion/取消才消除（INTERFACES §3）----
+# 「pending request 集合非空即 NEEDS YOU；明确的 resolve/completion/取消才清理；
+#   其他 item 事件不能抢掉等待状态。」以下断言冻结该语义，回归时不得放松。
+
+def _enter_waiting(engine, thread="t1", turn="turn-1"):
+    """走到 needs_you（turn 进行中 + 1 个 pending）并返回最新快照。"""
+    engine.apply(ev.thread_started(thread, "p", at_ms=0), 0)
+    engine.apply(ev.turn_started(thread, turn, summary="任务", at_ms=10), 10)
+    return engine.apply(
+        ev.approval_requested(thread, 0, "运行命令需要批准", turn_id=turn, at_ms=100), 100)
+
+
+def test_waiting_survives_other_item_events():
+    """迟到/普通 item 事件、plan、usage、thread 状态都不得抢掉 NEEDS YOU。"""
+    engine = StateEngine("e")
+    s = _enter_waiting(engine)
+    assert s["threads"][0]["state"] == "needs_you"
+
+    steps = [
+        ev.item_started("t1", "turn-1", "commandExecution",
+                        item_id="i1", summary="迟到的命令", at_ms=120),
+        ev.item_completed("t1", "turn-1", "commandExecution", item_id="i1", at_ms=130),
+        ev.plan_updated("t1", "turn-1", [("步骤", "in_progress")], at_ms=140),
+        ev.token_usage("t1", 100, 1000, turn_id="turn-1", at_ms=150),
+        ev.thread_status("t1", ev.THREAD_STATUS_ACTIVE, at_ms=160),
+        ev.thread_status("t1", ev.THREAD_STATUS_IDLE, at_ms=170),
+        ev.item_started("t1", "turn-1", "reasoning", at_ms=180),
+    ]
+    for e in steps:
+        s = engine.apply(e, e.at_ms)
+        rec = s["threads"][0]
+        assert rec["state"] == "needs_you", f"{e.type} 不得抢掉等待状态"
+        assert rec["attention"]["pending_count"] == 1
+        # waiting_ms 从首个 pending 起算，中间事件不清零也不重新起算
+        assert rec["waiting_ms"] == e.at_ms - 100
+    # plan 是内容事件：等待期间仍允许更新（PLAN UPDATE 不改变业务状态）
+    assert s["threads"][0]["plan"]["steps"] == [{"text": "步骤", "status": "in_progress"}]
+
+
+def test_duplicate_resolved_is_idempotent_and_unknown_resolved_ignored():
+    engine = StateEngine("e")
+    _enter_waiting(engine)
+    s1 = engine.apply(ev.server_request_resolved("t1", 0, at_ms=150), 150)
+    assert s1["threads"][0]["state"] == "working"
+    assert s1["threads"][0]["attention"] is None
+
+    # 迟到的重复 resolved：不复活等待、不崩、不改业务状态
+    s2 = engine.apply(ev.server_request_resolved("t1", 0, at_ms=200), 200)
+    assert s2["threads"][0]["state"] == "working"
+    assert s2["threads"][0]["attention"] is None
+    assert s2["threads"][0]["waiting_ms"] == 0
+    # 从未挂起的 request id：同样只走"无等待恢复"路径
+    s3 = engine.apply(ev.server_request_resolved("t1", 99, at_ms=250), 250)
+    assert s3["threads"][0]["state"] == "working"
+    assert s3["threads"][0]["attention"] is None
+
+
+def test_out_of_order_resolved_keeps_remaining_pending():
+    """多 pending 乱序解除：只清匹配 id，剩量保持 needs_you。"""
+    engine = StateEngine("e")
+    engine.apply(ev.thread_started("t1", "p", at_ms=0), 0)
+    engine.apply(ev.turn_started("t1", "turn-1", at_ms=10), 10)
+    engine.apply(ev.approval_requested("t1", 7, "命令批准", turn_id="turn-1", at_ms=20), 20)
+    s2 = engine.apply(ev.approval_requested("t1", 9, "用户输入", turn_id="turn-1", at_ms=30), 30)
+    assert s2["threads"][0]["attention"]["pending_count"] == 2
+
+    s3 = engine.apply(ev.server_request_resolved("t1", 9, at_ms=40), 40)  # 先解除后者
+    assert s3["threads"][0]["state"] == "needs_you"
+    assert s3["threads"][0]["attention"]["pending_count"] == 1
+    assert s3["threads"][0]["attention"]["summary"] == "命令批准"  # 剩下的是 id=7
+    s4 = engine.apply(ev.server_request_resolved("t1", 7, at_ms=50), 50)
+    assert s4["threads"][0]["state"] == "working"
+    assert s4["threads"][0]["attention"] is None
+
+
+def test_cancelled_turn_clears_waiting_and_late_requests_cannot_revive():
+    """取消是明确解除：清 pending → idle+cancelled；终态后迟到的审批请求被门闸丢弃。"""
+    engine = StateEngine("e")
+    _enter_waiting(engine)
+    s = engine.apply(ev.turn_completed("t1", "turn-1", ev.TURN_STATUS_CANCELLED, at_ms=200), 200)
+    rec = s["threads"][0]
+    assert rec["state"] == "idle" and rec["end_reason"] == "cancelled"
+    assert rec["attention"] is None and rec["waiting_ms"] == 0
+
+    late = [
+        ev.approval_requested("t1", 1, "迟到的审批", turn_id="turn-1", at_ms=210),
+        ev.item_started("t1", "turn-1", "commandExecution", summary="迟到的命令", at_ms=220),
+        ev.thread_status("t1", ev.THREAD_STATUS_ACTIVE, at_ms=230),
+    ]
+    for e in late:
+        s = engine.apply(e, e.at_ms)
+        rec = s["threads"][0]
+        assert rec["state"] == "idle"
+        assert rec["end_reason"] == "cancelled"
+        assert rec["attention"] is None  # 不复活等待
+
+
+def test_failed_terminal_error_not_done_and_late_activity_dropped():
+    """失败终态 → ERROR（绝不显示 DONE）；迟到 item 不改写终态。"""
+    engine = StateEngine("e")
+    engine.apply(ev.thread_started("t1", "p", at_ms=0), 0)
+    engine.apply(ev.turn_started("t1", "turn-1", at_ms=10), 10)
+    engine.apply(ev.approval_requested("t1", 0, "等待", turn_id="turn-1", at_ms=20), 20)
+    s = engine.apply(
+        ev.turn_completed("t1", "turn-1", ev.TURN_STATUS_FAILED,
+                          summary="模型拒绝请求", at_ms=30), 30)
+    rec = s["threads"][0]
+    assert rec["state"] == "error" and rec["end_reason"] == "failed"
+    assert rec["activity"] == "模型拒绝请求"
+    assert rec["attention"] is None  # 失败终态清理该 turn pending
+
+    late = engine.apply(
+        ev.item_started("t1", "turn-1", "agentMessage", summary="迟到的回复", at_ms=40), 40)
+    rec = late["threads"][0]
+    assert rec["state"] == "error"
+    assert rec["end_reason"] == "failed"
+    assert rec["activity"] == "模型拒绝请求"  # 迟到活动不改写终态摘要
+
+
+def test_thread_system_error_maps_error_not_done():
+    """thread/status systemError（thread 错误状态）→ ERROR。"""
+    engine = StateEngine("e")
+    engine.apply(ev.thread_started("t1", "p", at_ms=0), 0)
+    engine.apply(ev.turn_started("t1", "turn-1", at_ms=10), 10)
+    s = engine.apply(ev.thread_status("t1", ev.THREAD_STATUS_SYSTEM_ERROR, at_ms=20), 20)
+    rec = s["threads"][0]
+    assert rec["state"] == "error"
+    assert rec["end_reason"] is None  # thread 级错误：非 turn 终态，end_reason 保持 null
