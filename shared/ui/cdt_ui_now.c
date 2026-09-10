@@ -17,8 +17,12 @@
  * 由 cdt_ui.c 按生效页切换可见性；文本/样式/坐标与 P2.1 完全一致（渲染
  * 逐像素不变，见 artifacts/ui 回归对照）。
  *
- * 长文本两道防线：presenter 已按列预算截断（码点安全）+ LVGL dot 模式像素截断。
- * 非 ASCII 字符经 cdt_ui_ascii_safe 显示为 '?'（内置 Montserrat 为 ASCII 字体）。
+ * P2.4 修复（A6）：P2.1 的 make_label→make_box 顺序缺陷——cdt_uii_box 内
+ * remove_style_all 会清掉先设的字体样式，致正文/标题实际以 LV_FONT_DEFAULT
+ * 14px 渲染。全部文本改用顺序安全的 cdt_uii_text（先 remove_style_all/定位，
+ * 后设字体颜色），坐标不变；状态词 28px 不受影响（本就走 cdt_uii_label 且
+ * 未再过 make_box）。中文经 cdt_ui_ascii_safe 放行字体已覆盖码点（Noto Sans
+ * SC 子集），未覆盖码点仍折为可见 '?'。
  * UI 不做任何 IO/网络/ADC 调用。
  */
 #include <stdio.h>
@@ -26,12 +30,6 @@
 #include "cdt_ui.h"
 #include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
-
-/* 字体（内置 Montserrat，ASCII；本任务在 lv_conf.h 打开 14/16/28）*/
-#define F_TITLE  (&lv_font_montserrat_16)
-#define F_STATUS (&lv_font_montserrat_28)
-#define F_BODY   (&lv_font_montserrat_16)
-#define F_BAR    (&lv_font_montserrat_14)
 
 static lv_obj_t *now_root;
 
@@ -54,16 +52,6 @@ typedef struct {
 
 static now_widgets_t w;
 
-static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font)
-{
-    return cdt_uii_label(parent, font);
-}
-
-static void make_box(lv_obj_t *o, int x, int y, int wd, int ht)
-{
-    cdt_uii_box(o, x, y, wd, ht);
-}
-
 lv_obj_t *cdt_ui_now_root(void)
 {
     return now_root;
@@ -78,73 +66,62 @@ void cdt_ui_now_create(void)
 {
     lv_obj_t *scr = now_root = cdt_uii_page_root();
 
-    /* ---- 标题栏 28px：项目名（左，dot 截断）+ 电压（右）---- */
-    w.project = make_label(scr, F_TITLE);
-    make_box(w.project, 8, 12, 292, 20);
+    /* ---- 标题栏 28px：项目名（左，dot 截断）+ 电压（右）----
+     * 全部文本走 cdt_uii_text（remove_style_all 后设字体，顺序安全）。*/
+    w.project = cdt_uii_text(scr, F_TITLE, 8, 12, 292, 20);
     lv_label_set_long_mode(w.project, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(w.project, 292);
 
-    w.voltage = make_label(scr, F_TITLE);
-    make_box(w.voltage, 292, 12, 100, 20);
+    w.voltage = cdt_uii_text(scr, F_TITLE, 292, 12, 100, 20);
     lv_obj_set_style_text_align(w.voltage, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 
     /* ---- 链路提示条（反白，fresh 时隐藏；固定位置不回流）---- */
     w.link_bar = lv_obj_create(scr);
-    make_box(w.link_bar, 8, 36, 384, 20);
+    cdt_uii_box(w.link_bar, 8, 36, 384, 20);
     lv_obj_set_style_bg_color(w.link_bar, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(w.link_bar, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(w.link_bar, 0, LV_PART_MAIN);
 
-    w.link_label = make_label(w.link_bar, F_BAR);
+    /* label 自身不再过 make_box，cdt_uii_label 的字体样式保留（14px） */
+    w.link_label = cdt_uii_label(w.link_bar, F_BAR);
     lv_obj_set_style_text_color(w.link_label, lv_color_white(), LV_PART_MAIN);
     lv_obj_center(w.link_label);
 
     /* ---- 主状态区 52px：needs_you 反白 / error 粗框 ---- */
     w.status_box = lv_obj_create(scr);
-    make_box(w.status_box, 8, 64, 384, 52);
+    cdt_uii_box(w.status_box, 8, 64, 384, 52);
 
-    w.status_label = make_label(w.status_box, F_STATUS);
+    w.status_label = cdt_uii_label(w.status_box, F_STATUS);
     lv_obj_center(w.status_label);
 
     /* ---- 活动摘要（像素级 dot 截断兜底）---- */
-    w.activity = make_label(scr, F_BODY);
-    make_box(w.activity, 8, 124, 384, 20);
+    w.activity = cdt_uii_text(scr, F_BODY, 8, 124, 384, 20);
     lv_label_set_long_mode(w.activity, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(w.activity, 384);
 
     /* ---- 运行 / 等待时长 ---- */
-    w.elapsed = make_label(scr, F_BODY);
-    make_box(w.elapsed, 8, 152, 240, 20);
+    w.elapsed = cdt_uii_text(scr, F_BODY, 8, 152, 240, 20);
 
-    w.wait = make_label(scr, F_BODY);
-    make_box(w.wait, 192, 152, 200, 20);
+    w.wait = cdt_uii_text(scr, F_BODY, 192, 152, 200, 20);
     lv_obj_set_style_text_align(w.wait, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 
     /* ---- 计划摘要 / 额度摘要 / attention ---- */
-    w.plan = make_label(scr, F_BODY);
-    make_box(w.plan, 8, 178, 384, 20);
+    w.plan = cdt_uii_text(scr, F_BODY, 8, 178, 384, 20);
 
-    w.usage = make_label(scr, F_BODY);
-    make_box(w.usage, 8, 204, 384, 20);
+    w.usage = cdt_uii_text(scr, F_BODY, 8, 204, 384, 20);
 
-    w.attention = make_label(scr, F_BODY);
-    make_box(w.attention, 8, 230, 384, 20);
+    w.attention = cdt_uii_text(scr, F_BODY, 8, 230, 384, 20);
     lv_label_set_long_mode(w.attention, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(w.attention, 384);
 
     /* ---- 底栏：分隔线 + 页面指示 + 静音文字标签（图标为文字占位）---- */
     {
         lv_obj_t *rule = lv_obj_create(scr);
-        make_box(rule, 8, 266, 384, 2);
+        cdt_uii_box(rule, 8, 266, 384, 2);
         lv_obj_set_style_bg_color(rule, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, LV_PART_MAIN);
         lv_obj_set_style_border_width(rule, 0, LV_PART_MAIN);
     }
-    w.page_ind = make_label(scr, F_BAR);
-    make_box(w.page_ind, 8, 271, 200, 18);
+    w.page_ind = cdt_uii_text(scr, F_BAR, 8, 271, 200, 18);
 
-    w.mute = make_label(scr, F_BAR);
-    make_box(w.mute, 242, 271, 150, 18);
+    w.mute = cdt_uii_text(scr, F_BAR, 242, 271, 150, 18);
     lv_obj_set_style_text_align(w.mute, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 }
 

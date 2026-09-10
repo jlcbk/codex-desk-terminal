@@ -1,58 +1,72 @@
-# S_lifecycle.jsonl — lifecycle 注入场景：格式与契约样例（P1.5 / A5，2026-09-10）
+# S_lifecycle.jsonl — P2.5 全生命周期回放正式 fixture（A6 定稿，2026-09-10）
 #
-# 目的声明：本文件是 INTERFACES §4 注入 JSONL 的**格式与契约样例**，用于在模拟器回放实现前
-#   固化行结构、五种 action 的 payload 形状与 checkpoint 标注方式。它不是正式 lifecycle 验收
-#   fixture：正式生命周期 fixtures 由 P1.2 Mock Bridge 产出后与本文件及 tests/SCENARIOS.md
-#   §3.1 对齐定稿（S03/S04/S05/S06/S09 的断言要点即各阶段 checkpoint 断言来源）。
+# 业务快照来源（对齐声明，真源 tests/SCENARIOS.md §3.1）：
+#   全部 app_state payload = bridge replay 源对 P1.2 lifecycle 事件序列的快照原文：
+#     uv run --python 3.12 python -m bridge --source replay \
+#       --file tests/fixtures/bridge/lifecycle_events.jsonl \
+#       --epoch lifecycle-001 --anchor-ms 1789000000000
+#   （快照 seq N 的虚拟 at_ms = generated_at_ms - T0；由 scripts/gen_scenarios.py 生成）
 #
-# 格式真源：docs/INTERFACES.md §4；行细则与 payload 契约：tests/UI_CONTRACT.md §3。
-# 规则：# 开头行为注释；每行 {"at_ms","action","payload"[,"tag"]}；at_ms 单调不减；虚拟时钟从 0 起。
+# 电池 trace 独立驱动 LOW BATTERY（INTERFACES §4：不得画捷径页）：
+#   满足 §7.2 连续性：有效样本间隔 ≤2s；3600ms 起 ≤3600mV 1Hz 持续 30s，
+#   由 shared/power（P5.1 纯 FSM，与固件同源）判定 CRITICAL → 强制页。
 #
-# 边界声明：
-#   1. 本文件**不验证 Power FSM**。battery_sample 序列只演示「电池 trace 独立于业务快照驱动
-#      LOW BATTERY」的注入路径（INTERFACES §4），电压取 §7.2 临界值 3600/3700 附近；low_enter
-#      3700 / critical 3600 / 持续 30s 由 FSM（P1.4/P5.1 共享纯逻辑）判定，回放器不得画捷径页。
-#   2. advance_time 跳段（at 6000 → 31000 等）仅为压缩演示时长；真实 trace 必须满足 §7.2
-#      连续性（有效样本间隔 ≤2s、临界段 1Hz），由 P1.2/P5.1 正式 trace 保证。
-#   3. 业务时间戳用固定虚构 UTC 基准 T0=1789000000000（与虚拟 at_ms 解耦，见 UI_CONTRACT §3.2）。
-#
-# checkpoint 帧清单（tag → 期望页面/状态词，逐帧断言规则见 UI_CONTRACT §4，不只验末帧）：
-#   working       → NOW 页，状态词 WORKING，plan v1（3 步）
-#   plan_update   → plan v2（4 步），NOW 状态词仍 WORKING（PLAN UPDATE 不增加业务状态）
-#   needs_you     → NOW 页，状态词 NEEDS YOU，黑白粗框，等待提醒可见
-#   done          → NOW 页，状态词 DONE，粗框消失，pending 清零
-#   low_battery   → LOW BATTERY 强制页（电压、0%、低压提示、充电/唤醒说明），优先于业务页
-#   key_rejected  → 短按后仍停留 LOW BATTERY 强制页（不可被普通页切换覆盖）
-#   stale         → 陈旧提示可见，业务内容保留，计时冻结并标记最后更新
-#   disconnected  → 断连提示可见，任务不得被改成 IDLE/DONE
-#   resync_full   → 重连后取得全量快照，新 turn WORKING、旧计划已清
-#
-{"at_ms": 0, "action": "app_state", "tag": "working", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 1, "generated_at_ms": 1789000000000, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000000000}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-001", "project": "codex-desk-terminal", "state": "working", "activity": "正在运行构建与测试", "updated_at_ms": 1789000000000, "elapsed_ms": 0, "waiting_ms": 0, "end_reason": null, "attention": null, "plan": {"total": 3, "truncated": false, "steps": [{"text": "检查需求", "status": "completed"}, {"text": "实现界面", "status": "in_progress"}, {"text": "运行测试", "status": "pending"}]}, "context": {"used_tokens": null, "capacity_tokens": null, "used_percent": null}}], "usage": {"available": true, "updated_at_ms": 1789000000000, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
-{"at_ms": 500, "action": "battery_sample", "payload": {"battery_mv": 3980, "battery_valid": true}}
-{"at_ms": 1000, "action": "app_state", "tag": "plan_update", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 2, "generated_at_ms": 1789000001000, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000001000}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-001", "project": "codex-desk-terminal", "state": "working", "activity": "实现界面步骤完成，进入测试", "updated_at_ms": 1789000001000, "elapsed_ms": 1000, "waiting_ms": 0, "end_reason": null, "attention": null, "plan": {"total": 4, "truncated": false, "steps": [{"text": "检查需求", "status": "completed"}, {"text": "实现界面", "status": "completed"}, {"text": "运行测试", "status": "in_progress"}, {"text": "编写文档", "status": "pending"}]}, "context": {"used_tokens": 12000, "capacity_tokens": 200000, "used_percent": 6.0}}], "usage": {"available": true, "updated_at_ms": 1789000000000, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
-{"at_ms": 1500, "action": "battery_sample", "payload": {"battery_mv": 3860, "battery_valid": true}}
-{"at_ms": 2000, "action": "app_state", "tag": "needs_you", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 3, "generated_at_ms": 1789000002000, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000002000}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-001", "project": "codex-desk-terminal", "state": "needs_you", "activity": "等待你批准运行命令", "updated_at_ms": 1789000002000, "elapsed_ms": 2000, "waiting_ms": 0, "end_reason": null, "attention": {"pending_count": 1, "summary": "运行命令需要批准"}, "plan": {"total": 4, "truncated": false, "steps": [{"text": "检查需求", "status": "completed"}, {"text": "实现界面", "status": "completed"}, {"text": "运行测试", "status": "in_progress"}, {"text": "编写文档", "status": "pending"}]}, "context": {"used_tokens": 12000, "capacity_tokens": 200000, "used_percent": 6.0}}], "usage": {"available": true, "updated_at_ms": 1789000000000, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
-{"at_ms": 2500, "action": "battery_sample", "payload": {"battery_mv": 3720, "battery_valid": true}}
-{"at_ms": 3000, "action": "battery_sample", "payload": {"battery_mv": 3700, "battery_valid": true}}
-{"at_ms": 3500, "action": "key", "payload": {"key": "long_press"}}
-{"at_ms": 4000, "action": "app_state", "tag": "done", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 4, "generated_at_ms": 1789000004000, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000004000}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-001", "project": "codex-desk-terminal", "state": "done", "activity": "任务已完成", "updated_at_ms": 1789000004000, "elapsed_ms": 4000, "waiting_ms": 0, "end_reason": "completed", "attention": null, "plan": {"total": 4, "truncated": false, "steps": [{"text": "检查需求", "status": "completed"}, {"text": "实现界面", "status": "completed"}, {"text": "运行测试", "status": "completed"}, {"text": "编写文档", "status": "completed"}]}, "context": {"used_tokens": 15800, "capacity_tokens": 200000, "used_percent": 7.9}}], "usage": {"available": true, "updated_at_ms": 1789000000000, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
-{"at_ms": 4500, "action": "battery_sample", "payload": {"battery_mv": 3650, "battery_valid": true}}
-{"at_ms": 5000, "action": "battery_sample", "payload": {"battery_mv": 3601, "battery_valid": true}}
-{"at_ms": 5500, "action": "battery_sample", "payload": {"battery_mv": 3600, "battery_valid": true}}
-{"at_ms": 6000, "action": "advance_time", "payload": {"to_ms": 31000}}
-{"at_ms": 31000, "action": "battery_sample", "payload": {"battery_mv": 3600, "battery_valid": true}}
-{"at_ms": 32000, "action": "battery_sample", "payload": {"battery_mv": 3600, "battery_valid": true}}
-{"at_ms": 33000, "action": "battery_sample", "payload": {"battery_mv": 3595, "battery_valid": true}}
-{"at_ms": 33500, "action": "battery_sample", "payload": {"battery_mv": 3590, "battery_valid": true}}
-{"at_ms": 34000, "action": "app_state", "tag": "stale_check_frozen", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 5, "generated_at_ms": 1789000034000, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000034000}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-001", "project": "codex-desk-terminal", "state": "done", "activity": "任务已完成", "updated_at_ms": 1789000004000, "elapsed_ms": 4000, "waiting_ms": 0, "end_reason": "completed", "attention": null, "plan": {"total": 4, "truncated": false, "steps": [{"text": "检查需求", "status": "completed"}, {"text": "实现界面", "status": "completed"}, {"text": "运行测试", "status": "completed"}, {"text": "编写文档", "status": "completed"}]}, "context": {"used_tokens": 15800, "capacity_tokens": 200000, "used_percent": 7.9}}], "usage": {"available": true, "updated_at_ms": 1789000000000, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
-{"at_ms": 34500, "action": "battery_sample", "payload": {"battery_mv": 3588, "battery_valid": true}}
-{"at_ms": 35000, "action": "battery_sample", "tag": "low_battery", "payload": {"battery_mv": 3585, "battery_valid": true}}
-{"at_ms": 35500, "action": "key", "tag": "key_rejected", "payload": {"key": "short_press"}}
-{"at_ms": 36000, "action": "advance_time", "payload": {"to_ms": 82000}}
-{"at_ms": 82000, "action": "link", "tag": "stale", "payload": {"link_state": "stale"}}
-{"at_ms": 83000, "action": "link", "tag": "disconnected", "payload": {"link_state": "disconnected"}}
-{"at_ms": 83500, "action": "battery_sample", "payload": {"battery_mv": 3610, "battery_valid": true}}
-{"at_ms": 84000, "action": "battery_sample", "payload": {"battery_mv": 3705, "battery_valid": true}}
-{"at_ms": 84500, "action": "battery_sample", "payload": {"battery_mv": 3800, "battery_valid": true}}
-{"at_ms": 85000, "action": "link", "payload": {"link_state": "connected"}}
-{"at_ms": 85500, "action": "app_state", "tag": "resync_full", "payload": {"schema_version": 1, "kind": "state", "bridge_epoch": "mock-lifecycle-001", "seq": 6, "generated_at_ms": 1789000085500, "source": {"kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789000085500}, "selected_thread_id": "thread-demo", "threads_total": 1, "threads_truncated": false, "threads": [{"id": "thread-demo", "turn_id": "turn-002", "project": "codex-desk-terminal", "state": "working", "activity": "继续后续任务（新 turn）", "updated_at_ms": 1789000085500, "elapsed_ms": 1000, "waiting_ms": 0, "end_reason": null, "attention": null, "plan": {"total": 2, "truncated": false, "steps": [{"text": "整理测试报告", "status": "in_progress"}, {"text": "更新文档", "status": "pending"}]}, "context": {"used_tokens": 900, "capacity_tokens": 200000, "used_percent": 0.5}}], "usage": {"available": true, "updated_at_ms": 1789000085500, "windows_total": 1, "windows_truncated": false, "windows": [{"id": "quota-short", "label": "SHORT WINDOW", "used_percent": 43.5, "duration_mins": 300, "resets_at_ms": 1789004320000}]}}}
+# checkpoint 帧清单（tag → 期望页面/状态词；逐帧断言规则 UI_CONTRACT §4，不只验末帧）：
+#   idle          → NOW 页，状态词 IDLE（P1.2 thread_started 起始快照）
+#   working       → NOW 页，状态词 WORKING（turn_started）
+#   plan_update   → NOW 页，状态词仍 WORKING，PLAN 摘要更新为 1/3（内容事件不加状态）
+#   needs_you     → NOW 页，状态词 NEEDS YOU，反白粗框，等待提醒可见
+#   done          → NOW 页，状态词 DONE，粗框消失，pending 清零，时长定格
+#   low_battery   → LOW BATTERY 强制页（电压、0%、低压提示），优先于业务页
+#   key_rejected  → 短按被拒（无像素变化，不出帧；由 manifest view 断言覆盖）
+#   key_long_mute → 强制页保持 + MUTED 标签（长按不解除强制页）；生命周期至此
+#   （critical 锁存不因电池反弹撤销；断连/陈旧/恢复语义由 S11/S12，重同步由 S21）
+{"at_ms":0,"action":"app_state","tag":"idle","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":1,"generated_at_ms":1789000000000,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000000},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":null,"project":"codex-desk-terminal","state":"idle","activity":"","updated_at_ms":1789000000000,"elapsed_ms":0,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":0,"truncated":false,"steps":[]},"context":{"used_tokens":null,"capacity_tokens":null,"used_percent":null}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":100,"action":"app_state","tag":"working","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":2,"generated_at_ms":1789000000100,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000100},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"重构状态同步","updated_at_ms":1789000000100,"elapsed_ms":0,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":0,"truncated":false,"steps":[]},"context":{"used_tokens":null,"capacity_tokens":null,"used_percent":null}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":200,"action":"app_state","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":3,"generated_at_ms":1789000000200,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000200},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"重构状态同步","updated_at_ms":1789000000200,"elapsed_ms":100,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":0,"truncated":false,"steps":[]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":300,"action":"app_state","tag":"plan_update","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":4,"generated_at_ms":1789000000300,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000300},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"重构状态同步","updated_at_ms":1789000000300,"elapsed_ms":200,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":600,"action":"app_state","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":5,"generated_at_ms":1789000000600,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000600},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"pytest -q tests","updated_at_ms":1789000000600,"elapsed_ms":500,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":900,"action":"app_state","tag":"needs_you","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":6,"generated_at_ms":1789000000900,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000900},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"needs_you","activity":"pytest -q tests","updated_at_ms":1789000000900,"elapsed_ms":800,"waiting_ms":0,"end_reason":null,"attention":{"pending_count":1,"summary":"运行命令需要批准"},"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":false,"updated_at_ms":null,"windows_total":0,"windows_truncated":false,"windows":[]}}}
+{"at_ms":1200,"action":"app_state","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":7,"generated_at_ms":1789000001200,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000001200},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"needs_you","activity":"pytest -q tests","updated_at_ms":1789000000900,"elapsed_ms":1100,"waiting_ms":300,"end_reason":null,"attention":{"pending_count":1,"summary":"运行命令需要批准"},"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":true,"updated_at_ms":1789000001200,"windows_total":2,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789005601200},{"id":"codex-secondary","label":"10080 MIN WINDOW","used_percent":22.0,"duration_mins":10080,"resets_at_ms":1789088401200}]}}}
+{"at_ms":1500,"action":"app_state","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":8,"generated_at_ms":1789000001500,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000001500},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"pytest -q tests","updated_at_ms":1789000001500,"elapsed_ms":1400,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":true,"updated_at_ms":1789000001200,"windows_total":2,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789005601200},{"id":"codex-secondary","label":"10080 MIN WINDOW","used_percent":22.0,"duration_mins":10080,"resets_at_ms":1789088401200}]}}}
+{"at_ms":1800,"action":"app_state","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":9,"generated_at_ms":1789000001800,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000001800},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"working","activity":"pytest -q tests","updated_at_ms":1789000001800,"elapsed_ms":1700,"waiting_ms":0,"end_reason":null,"attention":null,"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":true,"updated_at_ms":1789000001200,"windows_total":2,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789005601200},{"id":"codex-secondary","label":"10080 MIN WINDOW","used_percent":22.0,"duration_mins":10080,"resets_at_ms":1789088401200}]}}}
+{"at_ms":2100,"action":"app_state","tag":"done","payload":{"schema_version":1,"kind":"state","bridge_epoch":"lifecycle-001","seq":10,"generated_at_ms":1789000002100,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000002100},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"done","activity":"pytest -q tests","updated_at_ms":1789000002100,"elapsed_ms":2000,"waiting_ms":0,"end_reason":"completed","attention":null,"plan":{"total":3,"truncated":false,"steps":[{"text":"检查需求","status":"completed"},{"text":"实现界面","status":"in_progress"},{"text":"运行测试","status":"pending"}]},"context":{"used_tokens":154000,"capacity_tokens":258400,"used_percent":59.6}}],"usage":{"available":true,"updated_at_ms":1789000001200,"windows_total":2,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789005601200},{"id":"codex-secondary","label":"10080 MIN WINDOW","used_percent":22.0,"duration_mins":10080,"resets_at_ms":1789088401200}]}}}
+{"at_ms":2500,"action":"battery_sample","payload":{"battery_mv":3980,"battery_valid":true}}
+{"at_ms":3000,"action":"battery_sample","payload":{"battery_mv":3860,"battery_valid":true}}
+{"at_ms":3500,"action":"battery_sample","payload":{"battery_mv":3720,"battery_valid":true}}
+{"at_ms":4000,"action":"battery_sample","payload":{"battery_mv":3700,"battery_valid":true}}
+{"at_ms":4500,"action":"battery_sample","payload":{"battery_mv":3650,"battery_valid":true}}
+{"at_ms":5000,"action":"battery_sample","payload":{"battery_mv":3601,"battery_valid":true}}
+{"at_ms":5500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":6500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":7500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":8500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":9500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":10500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":11500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":12500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":13500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":14500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":15500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":16500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":17500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":18500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":19500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":20500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":21500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":22500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":23500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":24500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":25500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":26500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":27500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":28500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":29500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":30500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":31500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":32500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":33500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":34500,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":35500,"action":"battery_sample","tag":"low_battery","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":35750,"action":"key","tag":"key_rejected","payload":{"key":"short_press"}}
+{"at_ms":36000,"action":"key","tag":"key_long_mute","payload":{"key":"long_press"}}

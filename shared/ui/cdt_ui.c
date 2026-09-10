@@ -8,6 +8,7 @@
  */
 #include <stdio.h>
 
+#include "cdt_font_noto_sc.h"
 #include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
 #include "cdt_ui_pages.h"
@@ -40,6 +41,9 @@ static void set_page_visible(cdt_page_t page)
 void cdt_ui_init(void)
 {
     lv_obj_t *scr = lv_screen_active();
+
+    /* 页面字体（Montserrat 副本 + SC 子集 fallback）必须先于页面构建 */
+    cdt_uii_fonts_init();
 
     /* 页面根：白底（I1 索引 1；SDL 驱动 1=白 0=黑），无边框无滚动 */
     lv_obj_set_style_bg_color(scr, lv_color_white(), LV_PART_MAIN);
@@ -111,6 +115,12 @@ uint32_t cdt_ui_key(cdt_key_event_t ev)
     return act;
 }
 
+/*
+ * 显示兜底：ASCII 原样（Montserrat 直渲）；Noto Sans SC 子集已覆盖的码点
+ * （CJK/全角标点等，见 cdt_font_noto_sc）按 UTF-8 序列原样放行；其余
+ * （emoji、假名、未收字等）每个码点折为一个可见占位符 '?'，不静默缺字
+ * （§6）。控制字符折为空格。dst 与 src 可不重叠；dstsz 含结尾 NUL。
+ */
 void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
 {
     const unsigned char *p = (const unsigned char *)(src ? src : "");
@@ -121,6 +131,7 @@ void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
     while (*p != '\0' && out + 1 < dstsz) {
         unsigned char b = *p;
         size_t skip = 1;
+        bool covered = false;
 
         if (b < 0x20u) {
             dst[out++] = ' '; /* 控制字符 → 空格，保护单行布局 */
@@ -129,11 +140,29 @@ void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
             dst[out++] = (char)b; /* ASCII 原样（内置 Montserrat 可渲染） */
         }
         else {
-            /* 非 ASCII 码点 → 一个 '?' 占位；跳过整个 UTF-8 序列 */
+            /* 非 ASCII：解码码点，子集已覆盖 → 原样放行整个序列；
+             * 未覆盖（emoji/假名等）→ 一个 '?' 占位（S17 可见替代符） */
+            uint32_t cp = 0xFFFFFFFFu;
+            if ((b & 0xE0u) == 0xC0u) { skip = 2; cp = b & 0x1Fu; }
+            else if ((b & 0xF0u) == 0xE0u) { skip = 3; cp = b & 0x0Fu; }
+            else if ((b & 0xF8u) == 0xF0u) { skip = 4; cp = b & 0x07u; }
+            {
+                size_t i;
+                bool bad = (cp == 0xFFFFFFFFu);
+                for (i = 1; !bad && i < skip; i++) {
+                    if ((p[i] & 0xC0u) != 0x80u) bad = true;
+                    else cp = (cp << 6) | (uint32_t)(p[i] & 0x3Fu);
+                }
+                covered = !bad && cdt_font_noto_sc_covers(cp);
+            }
+            if (covered) {
+                size_t i;
+                for (i = 0; i < skip && *p != '\0' && out + 1 < dstsz; i++) {
+                    dst[out++] = (char)*p++;
+                }
+                continue; /* p 已前移，跳过公共推进 */
+            }
             dst[out++] = '?';
-            if ((b & 0xE0u) == 0xC0u) skip = 2;
-            else if ((b & 0xF0u) == 0xE0u) skip = 3;
-            else if ((b & 0xF8u) == 0xF0u) skip = 4;
         }
         while (skip > 1 && *p != '\0') { p++; skip--; }
         if (*p != '\0') p++;

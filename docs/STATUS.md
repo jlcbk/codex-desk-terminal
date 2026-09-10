@@ -39,7 +39,7 @@
 |---|---|---|---|---|---|---|---|
 | P5.1 | A3（子代理） | done | P1.4（done）；P4.4 仅逻辑参数（硬件校准保持阻塞） | （本次提交） | `sh scripts/build_shared.sh`（A0 复跑 36+101=137 PASS exit 0；ASan 版 101 PASS 无报告） | shared/power/{cdt_power.h,cdt_power.c}、tests/shared/test_power.c、artifacts/power/ | A0 三裁决：BATTERY_FAULT 冻结为 flag+动作位（不增枚举，§7.3 定义其为入 CRITICAL 路径）；BOOT_CHECK 迟滞带不停留问题=自消解路径（放电→critical→睡；充电→recovery→active），P5.4 真机观察；CRITICAL 单拍保持满足"成立后 2s 内"（≤1s 显示+≤1s 末帧）。另修复 build_shared.sh 泄漏检查 BRE→ERE（此前空转，已真实复跑） |
 
-## P2：完整页面与自动回归（进行中）
+## P2：完整页面与自动回归（已完成）
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
@@ -49,7 +49,15 @@
 |---|---|---|---|---|---|---|---|
 | P2.1 | A2（子代理） | done | P1.3+P1.4（done） | （本次提交） | `sh scripts/build_presenter_tests.sh`（A0 复跑 42 PASS exit 0）；`--state` 渲染+两次 cmp 确定性 OK（A0 复验）；目检 needs_you 帧六要素 | shared/presenter/{cdt_view,cdt_presenter}、shared/ui/、simulator/（--state/--capture-frame）、tests/shared/test_presenter.c、artifacts/ui/ 10 帧 | CJK 为 ? 占位归 P2.2（Noto Sans SC）；LOW BATTERY 完整页归 P2.3；A0 裁决：门禁改分层（portable 禁 lvgl、ui 允许 lvgl 禁 esp/SDL），并修复其丢掉 grep -E 的回归+注释误报，五路注入验证生效 |
 | P2.2+P2.3 | A2（子代理） | done | P2.1（done） | （本次提交） | `sh scripts/build_presenter_tests.sh`（A0 复跑 42+67 PASS exit 0，门禁 4/4）；`sh scripts/build_shared.sh`（101 PASS exit 0）；`sh simulator/smoke_offscreen.sh`（exit 0） | shared/ui/{cdt_nav,cdt_ui_internal,cdt_ui_pages.h,cdt_ui_agents,cdt_ui_plan,cdt_ui_usage,cdt_ui_lowbat}、tests/shared/test_pages.c、artifacts/ui/page_{now,agents,plan,usage}.bmp+overlay_{disconnected_agents,stale_plan}.bmp+lowbat_forced.{bmp,log}、multi_agents.json | 遗留四项：①P2.1 NOW 页 make_label 后调 make_box 清字体样式（实际 LV_FONT_DEFAULT 14px 渲染，恰与 F_BAR 等值故视觉无差）→A0 裁决：随 P2.4 集成先修再产 golden；②CJK Noto Sans SC 子集未接（? 占位）→并入 P2.4 集成、先于 golden；③USAGE 倒计时=generated_at_ms+fresh 单调增量近似（陈旧冻结，代码注释已声明）；④模拟器 --battery-mv/--battery-seq 并存以后者为准 |
-| P2.4 golden 集成、P2.5 | A6（子代理） | doing | P2.2+P2.3（done） | - | - | - | 2026-09-10 派发：NOW 页字体修复+Noto Sans SC 子集（均先于 golden）→ golden 候选生成（A0 认可后定稿）→ check_ui 语义断言表接入 → P2.5 全生命周期回放 |
+| P2.4 golden 集成、P2.5 | A6（子代理） | done | P2.2+P2.3（done） | （本次提交） | 见下分项 | 见下分项 | 见下分项 |
+
+P2.4 集成+P2.5 验收明细（A0 复跑全绿，2026-09-10）：
+- **阶段一（先于 golden）**：NOW 页 make_label/make_box 字体缺陷已修（cdt_uii_text，42 断言复跑 PASS）；Noto Sans SC v2.004 子集接入（自研 fonttools 导出器 857 码点，A0 目检 CJK 真实渲染：fixcheck_cjk_now.png「中文项目名与English混排」等清晰无叠字；ASCII 逐像素不变）。
+- **阶段二（golden）**：`gen_goldens.py` 显式生成（默认候选目录，写 tests/golden 需 --golden-dir --force）；105 帧+SHA256SUMS；A0 复验 105/105 sha256 OK、22/22 场景零像素差异、语义断言激活（语义=ok）、check_ui --self-test PASS（--golden 只读红线保持）、1 像素翻转必败。
+- **阶段三（P2.5）**：`replay_lifecycle.py` A0 复跑全部通过 exit 0——bridge replay 10 快照逐字段一致、五阶段快照断言（plan_update 保持 WORKING/PLAN 1/3）、时长断言（终态定格）、短按被拒/长按只静音。
+- **门禁**：42+67/36+101 断言、双平台头门禁、smoke、check_protocol 16/16、bridge pytest 76 全绿。
+- **附带收编**：①cdt_json.c P1.4 潜伏空指针修复（cdtj_read_number 浮点分支未判 dval==NULL，skip_value 跳浮点字面量必段错误——A0 复核确认真实缺陷、一行守卫修复）；②presenter 终态时长定格（S06 语义）；③模拟器 --scenario/--capture-dir 注入回放（UI_CONTRACT §3 契约落地，+823 行宿主层）；④S04/S09/S21 fixture 对齐定稿（P1.2 阻塞项清账）。
+- **SCENARIOS §2/§3 落地偏差四项**（帧名 __f 后缀/无变化不出帧/超集帧集/按键次数真值）：以 tests/fixtures/scenarios/README.md 为准，A0 认可，待 A5 下轮修订 SCENARIOS.md 同步。
 
 
 

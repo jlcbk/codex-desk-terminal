@@ -326,7 +326,9 @@ cdtj_err_t cdtj_read_number(cdt_json_t *j, bool *is_integer, int64_t *ival, doub
         }
         memcpy(buf, s, n);
         buf[n] = '\0';
-        *dval = strtod(buf, NULL);
+        if (dval != NULL) { /* skip_value 路径传 NULL：仅消费字面量（P2.4 修空指针） */
+            *dval = strtod(buf, NULL);
+        }
     }
     if (is_integer != NULL) {
         *is_integer = isint;

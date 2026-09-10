@@ -1,0 +1,3 @@
+# S01_idle — 无任务 IDLE（SCENARIOS §3 S01）
+# 基准：无线程；电压未注入显示 --；额度照常显示。虚拟时钟从 0 起；T0=1789000000000。
+{"at_ms":0,"action":"app_state","tag":"idle","payload":{"schema_version":1,"kind":"state","bridge_epoch":"scenario-001","seq":1,"generated_at_ms":1789000000000,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000000},"selected_thread_id":null,"threads_total":0,"threads_truncated":false,"threads":[],"usage":{"available":true,"updated_at_ms":1789000000000,"windows_total":1,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789003600000}]}}}

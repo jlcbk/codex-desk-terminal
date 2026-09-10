@@ -395,7 +395,12 @@ void cdt_present(const cdt_app_state_t *state,
                    CDT_VIEW_ATTENTION_MAX_COLS);
     }
 
-    /* ---- 时长：base + fresh 增量（陈旧冻结）---- */
+    /* ---- 时长：base + fresh 增量（陈旧冻结）----
+     * 终态（done/error/cancelled，end_reason 非空）任务时长定格在快照基值：
+     * 终态后时长不再推进（SCENARIOS S06；任务已结束，无新可计时长）。*/
+    if (th->end_reason != CDT_END_REASON_NULL) {
+        delta_ms = 0;
+    }
     fmt_duration(view->elapsed_text, sizeof(view->elapsed_text),
                  (uint64_t)th->elapsed_ms + delta_ms);
     fmt_duration(view->waiting_text, sizeof(view->waiting_text),

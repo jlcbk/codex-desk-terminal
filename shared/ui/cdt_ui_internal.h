@@ -12,11 +12,7 @@
 
 #include "cdt_ui.h"
 
-/* 页面字体（内置 Montserrat，ASCII） */
-#define F_TITLE  (&lv_font_montserrat_16)
-#define F_STATUS (&lv_font_montserrat_28)
-#define F_BODY   (&lv_font_montserrat_16)
-#define F_BAR    (&lv_font_montserrat_14)
+/* 页面字体定义见下方 F_*（P2.4 起 Montserrat+SC 子集 fallback） */
 
 /* 黑底文本 label（parent 内，默认空文本）。
  * 注意：后续若对返回值调用 cdt_uii_box（remove_style_all），字体样式会被
@@ -30,6 +26,21 @@ lv_obj_t *cdt_uii_text(lv_obj_t *parent, const lv_font_t *font, int x, int y,
 
 /* remove_style_all + 定位/尺寸（布局原子） */
 void cdt_uii_box(lv_obj_t *o, int x, int y, int wd, int ht);
+
+/* ---- 页面字体（P2.4 接入 Noto Sans SC 子集，A6）----
+ * Montserrat 14/16 的运行期副本 + SC 子集 fallback：ASCII 渲染逐像素与
+ * 纯 Montserrat 一致，CJK 逐字形回退到 cdt_font_noto_sc_14/16。
+ * 必须先调 cdt_uii_fonts_init()（cdt_ui_init 首行）再使用 F_*。
+ * F_STATUS 状态词恒为 ASCII（presenter 生成），继续用纯 montserrat_28。 */
+extern lv_font_t cdt_uii_font_bar14;  /* Montserrat 14 + SC14 fallback */
+extern lv_font_t cdt_uii_font_body16; /* Montserrat 16 + SC16 fallback */
+
+#define F_TITLE  (&cdt_uii_font_body16)
+#define F_STATUS (&lv_font_montserrat_28)
+#define F_BODY   (&cdt_uii_font_body16)
+#define F_BAR    (&cdt_uii_font_bar14)
+
+void cdt_uii_fonts_init(void);
 
 /* 整屏页面根容器：400×300、透明、不可滚动、创建后隐藏。
  * 各页 widgets 挂在自己根容器下（相对坐标 = 绝对坐标）。 */

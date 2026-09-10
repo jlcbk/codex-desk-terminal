@@ -1,25 +1,31 @@
 /**
  * @file main.c
  * codex-display-sim 模拟器（P1.3 骨架 + P2.1 状态注入/渲染/抓帧
- * + P2.2/P2.3 导航与强制页，A2）。
+ * + P2.2/P2.3 导航与强制页，A2；P2.4 集成 --scenario 回放，A6）。
  *
- * P2.2/P2.3 新增（宿主行为只在本文件，shared/ui 不做 IO）：
- *   --page <now|agents|plan|usage>   初始普通页（写 DeviceRuntime.selected_page）
- *   --battery-seq "<mv>@<ms>,..."    电池采样序列：经与固件相同的 Power FSM
- *                                    （shared/power，P5.1）步进产生保护态，
- *                                    runtime.power_state 取 FSM 终态——LOW BATTERY
- *                                    强制页由真实 FSM 驱动，不提供直接画低压页的捷径
- *   KEY 导航：Space/Right=短按（cdt_nav_key：子页先推进再切主页面）、
- *   m=长按（静音当前提醒）；强制低压页拒普通页切换
+ * P2.4 集成新增（宿主行为只在本文件，shared/ui 不做 IO）：
+ *   --scenario <file.jsonl>          INTERFACES §4 注入 JSONL 回放（先全量预检
+ *                                    再回放；虚拟时钟由 at_ms/advance_time 驱动，
+ *                                    确定性渲染）；与 --fixed-clock 互斥
+ *   --capture-dir <dir>              帧与 manifest 输出目录（契约
+ *                                    tests/UI_CONTRACT.md §3：按场景主名建子目录，
+ *                                    每条 action 后 ViewModel 有变化才出帧，帧为
+ *                                    400x300 逻辑单色 PNG；manifest 每行
+ *                                    frame/scenario/frame_index/at_ms/action/seq
+ *                                    + 扩展 view 字段供 check_ui 语义断言）
  *
+ * P2.2/P2.3 保留：--page/--battery-seq（经真实 Power FSM）/KEY 导航。
  * P2.1 保留：--state/--battery-mv/--link-state/--capture-frame/--quit-after-ms/
  * --fixed-clock；无 --state 时渲染占位画面；Esc/窗口关闭退出。
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "cdt_frame.h"
+#include "cdt_json.h"
 #include "cdt_nav.h"
 #include "cdt_parser.h"
 #include "cdt_power.h"
@@ -44,6 +50,8 @@ typedef struct {
     long fixed_clock_ms;        /* --fixed-clock（<0 = 未指定；>0 时虚拟单调时钟恒定） */
     cdt_page_t page;            /* --page（默认 NOW） */
     const char *battery_seq;    /* --battery-seq "mv@ms,..."（FSM 驱动） */
+    const char *scenario;       /* --scenario 注入 JSONL（P2.4） */
+    const char *capture_dir;    /* --capture-dir（P2.4，帧+manifest） */
 } sim_opts_t;
 
 static void usage(const char *prog)
@@ -54,9 +62,12 @@ static void usage(const char *prog)
            "  --battery-seq <mv>@<ms>,...  battery samples through the real Power FSM (P5.1)\n"
            "  --link-state <connected|stale|disconnected>  (default connected)\n"
            "  --page <now|agents|plan|usage>  initial normal page (default now)\n"
+           "  --scenario <file.jsonl>      injection JSONL replay (INTERFACES #4; full\n"
+           "                               pre-validation; deterministic virtual clock)\n"
+           "  --capture-dir <dir>          frames + manifest.jsonl per scenario subdir (UI_CONTRACT #3)\n"
            "  --capture-frame <out.bmp>    save logical 400x300 1bpp mono frame (1=black) on exit\n"
            "  --quit-after-ms <N>          auto quit after N ms (env SIM_AUTO_QUIT_MS still honored)\n"
-           "  --fixed-clock <ms>           freeze monotonic clock at <ms> for deterministic capture (P2.4)\n"
+           "  --fixed-clock <ms>           freeze monotonic clock at <ms> (single-state capture; not with --scenario)\n"
            "Keys: Space/Right=short press (page cycle), m=long press (mute), Esc=quit\n"
            "Env: SIM_AUTO_QUIT_MS, SIM_CAPTURE_PATH (legacy SDL-frame evidence)\n",
            prog);
@@ -101,6 +112,12 @@ static void parse_args(int argc, char **argv, sim_opts_t *o)
         else if (strcmp(a, "--capture-frame") == 0 && i + 1 < argc) {
             o->capture_frame = argv[++i];
         }
+        else if (strcmp(a, "--scenario") == 0 && i + 1 < argc) {
+            o->scenario = argv[++i];
+        }
+        else if (strcmp(a, "--capture-dir") == 0 && i + 1 < argc) {
+            o->capture_dir = argv[++i];
+        }
         else if (strcmp(a, "--quit-after-ms") == 0 && i + 1 < argc) {
             o->quit_after_ms = atol(argv[++i]);
         }
@@ -122,6 +139,24 @@ static void parse_args(int argc, char **argv, sim_opts_t *o)
     if (o->quit_after_ms < 0) {
         const char *env = getenv("SIM_AUTO_QUIT_MS");
         o->quit_after_ms = env ? atol(env) : 0;
+    }
+
+    /* --scenario 与 --fixed-clock/--state/--battery-seq 互斥（回放时钟由 at_ms 驱动）*/
+    if (o->scenario != NULL) {
+        if (o->fixed_clock_ms > 0) {
+            fprintf(stderr, "[sim] ERROR: --scenario drives its own virtual clock; "
+                    "--fixed-clock is not applicable\n");
+            exit(2);
+        }
+        if (o->state_path != NULL || o->battery_seq != NULL) {
+            fprintf(stderr, "[sim] ERROR: --scenario cannot be combined with "
+                    "--state/--battery-seq\n");
+            exit(2);
+        }
+        if (o->capture_dir == NULL) {
+            fprintf(stderr, "[sim] ERROR: --scenario requires --capture-dir\n");
+            exit(2);
+        }
     }
 }
 
@@ -172,10 +207,15 @@ static int load_state_file(const char *path, cdt_app_state_t *out)
 
 /*---------- DeviceRuntime 合成（模拟器测试注入；生产固件不经此路径）----------*/
 
-/* 虚拟单调时钟：--fixed-clock N 时恒为 N（golden 抓帧确定性）；否则真实节拍 */
+/* 虚拟单调时钟：--fixed-clock N 时恒为 N（golden 抓帧确定性）；
+ * --scenario 回放时由注入文件的 at_ms/advance_time 驱动（确定性）；
+ * 否则真实节拍 */
 static const sim_opts_t *g_opts; /* main 初始化后只读 */
+static int64_t g_scenario_clock_ms = 0; /* --scenario 虚拟时钟（回放器推进） */
+static int g_scenario_mode = 0;
 static uint32_t sim_now_ms(void)
 {
+    if (g_scenario_mode) return (uint32_t)g_scenario_clock_ms;
     if (g_opts != NULL && g_opts->fixed_clock_ms > 0) {
         return (uint32_t)g_opts->fixed_clock_ms;
     }
@@ -600,6 +640,746 @@ static void sim_build_placeholder_ui(void)
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 24);
 }
 
+/*========== --scenario：注入 JSONL 回放（P2.4，契约 tests/UI_CONTRACT.md §3）==========
+ * 先全量预检（未知 action、at_ms/advance_time 回退、payload 不符、AppState 非法
+ * 都在出帧前失败，退出码 1，打印行号+原因），再逐条 apply。每条 action 后
+ * present+整屏重渲染，逻辑帧与上一帧逐字节比较，有变化才导出 PNG 并记 manifest。
+ * 确定性：时钟只来自 at_ms/advance_time；不读墙钟；无动画。 */
+
+#define SC_MAX_ACTIONS 512
+#define SC_LINE_MAX (CDT_STATE_JSON_MAX_BYTES + 256)
+
+typedef enum {
+    SC_ACT_APP_STATE = 1,
+    SC_ACT_BATTERY,
+    SC_ACT_KEY,
+    SC_ACT_LINK,
+    SC_ACT_ADVANCE
+} sc_action_kind_t;
+
+typedef struct {
+    long line_no;          /* 文件行号（报错用） */
+    long at_ms;            /* 虚拟时钟调度点 */
+    sc_action_kind_t kind;
+    char tag[48];          /* 可选 checkpoint 标签（空串=无） */
+    const char *state_json;/* APP_STATE：payload 原始字节（指向行缓冲） */
+    size_t state_len;
+    uint16_t battery_mv;   /* BATTERY */
+    bool battery_valid;
+    int key_long;          /* KEY：0=short 1=long */
+    int link_state;        /* LINK：cdt_link_state_t 值 */
+    long advance_to_ms;    /* ADVANCE */
+} sc_action_t;
+
+static sc_action_t g_sc_actions[SC_MAX_ACTIONS];
+static int g_sc_count = 0;
+static char *g_sc_buf = NULL; /* 整文件行缓冲（action 的指针指向其中） */
+
+/* 场景行解析错误：统一打印行号+原因后以退出码 1 结束（契约 §3.5） */
+static void sc_fail(long line_no, const char *why)
+{
+    fprintf(stderr, "[sim] scenario ERROR (line %ld): %s\n", line_no, why);
+    exit(1);
+}
+
+static int sc_kind_of(const char *s)
+{
+    if (strcmp(s, "app_state") == 0) return SC_ACT_APP_STATE;
+    if (strcmp(s, "battery_sample") == 0) return SC_ACT_BATTERY;
+    if (strcmp(s, "key") == 0) return SC_ACT_KEY;
+    if (strcmp(s, "link") == 0) return SC_ACT_LINK;
+    if (strcmp(s, "advance_time") == 0) return SC_ACT_ADVANCE;
+    return 0;
+}
+
+static long sc_parse_ms(const cdt_app_state_t *unused, int64_t v, long line_no)
+{
+    (void)unused;
+    if (v < 0 || v > 0x7FFFFFFFL) sc_fail(line_no, "at_ms/to_ms 越界（0..2^31-1）");
+    return (long)v;
+}
+
+/* 解析并全量预检场景文件；违规 sc_fail（退出码 1），成功返回条数 */
+static int sc_load(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        fprintf(stderr, "[sim] ERROR: cannot open scenario file '%s'\n", path);
+        exit(2);
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); exit(2); }
+    long n = ftell(f);
+    if (n < 0 || n > 4 * 1024 * 1024) {
+        fprintf(stderr, "[sim] ERROR: scenario file '%s' too large (%ld bytes)\n", path, n);
+        fclose(f);
+        exit(2);
+    }
+    fseek(f, 0, SEEK_SET);
+    g_sc_buf = (char *)malloc((size_t)n + 1);
+    if (g_sc_buf == NULL || fread(g_sc_buf, 1, (size_t)n, f) != (size_t)n) {
+        fprintf(stderr, "[sim] ERROR: cannot read scenario file '%s'\n", path);
+        fclose(f);
+        exit(2);
+    }
+    g_sc_buf[n] = '\0';
+    fclose(f);
+
+    long prev_at = -1;
+    char *line = g_sc_buf;
+    long line_no = 0;
+    while (line != NULL && *line != '\0') {
+        char *nl = strchr(line, '\n');
+        if (nl != NULL) *nl = '\0';
+        line_no++;
+
+        /* 去行尾 \r；跳过空行与 # 注释 */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == ' '
+                           || line[len - 1] == '\t')) {
+            line[--len] = '\0';
+        }
+        const char *s = line;
+        while (*s == ' ' || *s == '\t') s++;
+        if (*s == '\0' || *s == '#') {
+            line = (nl != NULL) ? nl + 1 : NULL;
+            continue;
+        }
+
+        if (g_sc_count >= SC_MAX_ACTIONS) {
+            sc_fail(line_no, "action 数超上限（SC_MAX_ACTIONS=512）");
+        }
+        sc_action_t *a = &g_sc_actions[g_sc_count];
+        memset(a, 0, sizeof(*a));
+        a->line_no = line_no;
+
+        /* 逐字段解析 {"at_ms","action","payload"[,"tag"]}；未知键拒绝（预检） */
+        cdt_json_t j;
+        cdtj_init(&j, s, strlen(s));
+        if (cdtj_peek(&j) != '{') sc_fail(line_no, "行必须是 JSON 对象");
+        cdtj_expect(&j, '{');
+        bool have_at = false, have_action = false, have_payload = false;
+        int64_t at_ms = 0;
+        char key[24];
+        for (;;) {
+            if (cdtj_peek(&j) == '}') break;
+            if (have_at || have_action || have_payload) cdtj_expect(&j, ',');
+            size_t klen = 0;
+            if (cdtj_read_string(&j, key, sizeof(key), &klen) != CDT_PARSE_OK) {
+                sc_fail(line_no, "键名非法");
+            }
+            cdtj_expect(&j, ':');
+            if (strcmp(key, "at_ms") == 0) {
+                bool is_int = false;
+                if (cdtj_read_number(&j, &is_int, &at_ms, NULL) != CDT_PARSE_OK || !is_int) {
+                    sc_fail(line_no, "at_ms 必须是非负整数字面量");
+                }
+                have_at = true;
+            }
+            else if (strcmp(key, "action") == 0) {
+                char act[24];
+                size_t alen = 0;
+                if (cdtj_read_string(&j, act, sizeof(act), &alen) != CDT_PARSE_OK) {
+                    sc_fail(line_no, "action 非法");
+                }
+                a->kind = (sc_action_kind_t)sc_kind_of(act);
+                if (a->kind == 0) sc_fail(line_no, "未知 action（契约 §3.2）");
+                have_action = true;
+            }
+            else if (strcmp(key, "tag") == 0) {
+                char tag[48];
+                size_t tlen = 0;
+                if (cdtj_read_string(&j, tag, sizeof(tag), &tlen) != CDT_PARSE_OK ||
+                    tlen == 0) {
+                    sc_fail(line_no, "tag 非法或为空");
+                }
+                memcpy(a->tag, tag, sizeof(a->tag));
+            }
+            else if (strcmp(key, "payload") == 0) {
+                have_payload = true;
+                if (cdtj_peek(&j) != '{') sc_fail(line_no, "payload 必须是对象");
+                const uint8_t *pstart = j.p;
+                if (cdtj_skip_value(&j) != CDT_PARSE_OK) {
+                    sc_fail(line_no, "payload JSON 非法");
+                }
+                a->state_json = (const char *)pstart;
+                a->state_len = (size_t)(j.p - pstart);
+            }
+            else {
+                sc_fail(line_no, "未知键（只允许 at_ms/action/payload/tag）");
+            }
+        }
+        cdtj_expect(&j, '}');
+        if (cdtj_expect_eof(&j) != CDT_PARSE_OK) sc_fail(line_no, "对象后有多余内容");
+        if (!have_at || !have_action || !have_payload) {
+            sc_fail(line_no, "缺少 at_ms/action/payload 之一");
+        }
+        a->at_ms = sc_parse_ms(NULL, at_ms, line_no);
+        if (a->at_ms < prev_at) sc_fail(line_no, "at_ms 回退（必须单调不减）");
+        prev_at = a->at_ms;
+
+        /* payload 形状预检（契约 §3.2）：app_state 走完整 shared/state 解析 */
+        switch (a->kind) {
+            case SC_ACT_APP_STATE: {
+                cdt_app_state_t st;
+                cdt_parse_result_t r = cdt_state_parse((const uint8_t *)a->state_json,
+                                                       a->state_len, &st);
+                if (r != CDT_PARSE_OK) {
+                    char why[96];
+                    snprintf(why, sizeof(why), "AppState 校验失败（cdt_state_parse code %d）",
+                             (int)r);
+                    sc_fail(line_no, why);
+                }
+                break;
+            }
+            case SC_ACT_BATTERY: {
+                cdt_json_t p;
+                cdtj_init(&p, a->state_json, a->state_len);
+                cdtj_expect(&p, '{');
+                bool have_mv = false, have_valid = false, mv_null = false;
+                int64_t mv = 0;
+                bool valid = false;
+                char key2[24];
+                while (cdtj_peek(&p) != '}') {
+                    size_t klen = 0;
+                    if (cdtj_read_string(&p, key2, sizeof(key2), &klen) != CDT_PARSE_OK) {
+                        sc_fail(line_no, "battery payload 键名非法");
+                    }
+                    cdtj_expect(&p, ':');
+                    if (strcmp(key2, "battery_mv") == 0) {
+                        bool is_int = false;
+                        if (cdtj_peek(&p) == 'n') { /* null（invalid 采样） */
+                            if (cdtj_expect_null(&p) != CDT_PARSE_OK) {
+                                sc_fail(line_no, "battery_mv 字面量非法");
+                            }
+                            mv_null = true;
+                        }
+                        else if (cdtj_read_number(&p, &is_int, &mv, NULL) != CDT_PARSE_OK ||
+                                 !is_int || mv < 0 || mv > 65535) {
+                            sc_fail(line_no, "battery_mv 必须 0..65535 整数或 null");
+                        }
+                        have_mv = true;
+                    }
+                    else if (strcmp(key2, "battery_valid") == 0) {
+                        if (cdtj_read_bool(&p, &valid) != CDT_PARSE_OK) {
+                            sc_fail(line_no, "battery_valid 必须是 bool");
+                        }
+                        have_valid = true;
+                    }
+                    else {
+                        sc_fail(line_no, "未知 battery payload 键");
+                    }
+                    if (cdtj_peek(&p) == ',') cdtj_expect(&p, ',');
+                }
+                cdtj_expect(&p, '}');
+                if (!have_mv || !have_valid) sc_fail(line_no, "battery payload 缺字段");
+                if (!valid && !mv_null) {
+                    sc_fail(line_no, "battery_valid=false 时 battery_mv 必须 null");
+                }
+                if (valid && mv_null) {
+                    sc_fail(line_no, "battery_valid=true 时 battery_mv 不能为 null");
+                }
+                a->battery_mv = (uint16_t)mv;
+                a->battery_valid = valid;
+                break;
+            }
+            case SC_ACT_KEY: {
+                cdt_json_t p;
+                cdtj_init(&p, a->state_json, a->state_len);
+                cdtj_expect(&p, '{');
+                char key2[24], val[24];
+                size_t klen = 0, vlen = 0;
+                if (cdtj_read_string(&p, key2, sizeof(key2), &klen) != CDT_PARSE_OK ||
+                    strcmp(key2, "key") != 0) {
+                    sc_fail(line_no, "key payload 需 {\"key\": ...}");
+                }
+                cdtj_expect(&p, ':');
+                if (cdtj_read_string(&p, val, sizeof(val), &vlen) != CDT_PARSE_OK) {
+                    sc_fail(line_no, "key 值非法");
+                }
+                if (strcmp(val, "short_press") == 0) a->key_long = 0;
+                else if (strcmp(val, "long_press") == 0) a->key_long = 1;
+                else sc_fail(line_no, "key 值须 short_press|long_press");
+                cdtj_expect(&p, '}');
+                break;
+            }
+            case SC_ACT_LINK: {
+                cdt_json_t p;
+                cdtj_init(&p, a->state_json, a->state_len);
+                cdtj_expect(&p, '{');
+                char key2[24], val[24];
+                size_t klen = 0, vlen = 0;
+                if (cdtj_read_string(&p, key2, sizeof(key2), &klen) != CDT_PARSE_OK ||
+                    strcmp(key2, "link_state") != 0) {
+                    sc_fail(line_no, "link payload 需 {\"link_state\": ...}");
+                }
+                cdtj_expect(&p, ':');
+                if (cdtj_read_string(&p, val, sizeof(val), &vlen) != CDT_PARSE_OK) {
+                    sc_fail(line_no, "link_state 值非法");
+                }
+                if (strcmp(val, "connected") == 0) a->link_state = CDT_LINK_CONNECTED;
+                else if (strcmp(val, "stale") == 0) a->link_state = CDT_LINK_STALE;
+                else if (strcmp(val, "disconnected") == 0) {
+                    a->link_state = CDT_LINK_DISCONNECTED;
+                }
+                else sc_fail(line_no, "link_state 值非法");
+                cdtj_expect(&p, '}');
+                break;
+            }
+            case SC_ACT_ADVANCE: {
+                cdt_json_t p;
+                cdtj_init(&p, a->state_json, a->state_len);
+                cdtj_expect(&p, '{');
+                char key2[24];
+                size_t klen = 0;
+                int64_t to_ms = 0;
+                bool is_int = false;
+                if (cdtj_read_string(&p, key2, sizeof(key2), &klen) != CDT_PARSE_OK ||
+                    strcmp(key2, "to_ms") != 0) {
+                    sc_fail(line_no, "advance_time payload 需 {\"to_ms\": N}");
+                }
+                cdtj_expect(&p, ':');
+                if (cdtj_read_number(&p, &is_int, &to_ms, NULL) != CDT_PARSE_OK || !is_int) {
+                    sc_fail(line_no, "to_ms 必须是非负整数");
+                }
+                a->advance_to_ms = sc_parse_ms(NULL, to_ms, line_no);
+                cdtj_expect(&p, '}');
+                if (a->advance_to_ms < a->at_ms) {
+                    sc_fail(line_no, "advance_time to_ms < at_ms");
+                }
+                break;
+            }
+            default:
+                sc_fail(line_no, "内部：未知 action kind");
+        }
+        g_sc_count++;
+        line = (nl != NULL) ? nl + 1 : NULL;
+    }
+    if (g_sc_count == 0) sc_fail(1, "场景文件没有任何 action");
+    return g_sc_count;
+}
+
+/* ---- PNG 输出：400x300 灰度 8bit、无滤波、zlib stored 块（字节确定） ---- */
+
+static uint32_t sc_crc32(const uint8_t *d, size_t n)
+{
+    uint32_t c = 0xFFFFFFFFu;
+    size_t i;
+    int k;
+    for (i = 0; i < n; i++) {
+        c ^= d[i];
+        for (k = 0; k < 8; k++) {
+            c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+        }
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+
+static uint32_t sc_adler32(const uint8_t *d, size_t n)
+{
+    uint32_t a = 1, b = 0;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        a = (a + d[i]) % 65521u;
+        b = (b + a) % 65521u;
+    }
+    return (b << 16) | a;
+}
+
+static void sc_png_chunk(FILE *fp, const char *type, const uint8_t *body, uint32_t len)
+{
+    uint8_t hdr[8];
+    uint8_t crcb[4];
+    uint8_t *tmp;
+    uint32_t crc;
+    hdr[0] = (uint8_t)(len >> 24);
+    hdr[1] = (uint8_t)(len >> 16);
+    hdr[2] = (uint8_t)(len >> 8);
+    hdr[3] = (uint8_t)len;
+    hdr[4] = (uint8_t)type[0];
+    hdr[5] = (uint8_t)type[1];
+    hdr[6] = (uint8_t)type[2];
+    hdr[7] = (uint8_t)type[3];
+    fwrite(hdr, 1, 8, fp);
+    if (len > 0) fwrite(body, 1, len, fp);
+    tmp = (uint8_t *)malloc((size_t)len + 4);
+    if (tmp != NULL) {
+        memcpy(tmp, hdr + 4, 4);
+        if (len > 0) memcpy(tmp + 4, body, len);
+        crc = sc_crc32(tmp, (size_t)len + 4);
+        free(tmp);
+    }
+    else {
+        crc = 0; /* malloc 失败时 CRC 错误 → 文件损坏可被检查发现，不静默 */
+    }
+    crcb[0] = (uint8_t)(crc >> 24);
+    crcb[1] = (uint8_t)(crc >> 16);
+    crcb[2] = (uint8_t)(crc >> 8);
+    crcb[3] = (uint8_t)crc;
+    fwrite(crcb, 1, 4, fp);
+}
+
+static int write_frame_png(const cdt_frame_t *f, const char *path)
+{
+    /* 原始扫描线：每行 1 字节滤波 0 + 400 字节灰度（黑=0/白=255） */
+    static uint8_t raw[(1 + SIM_HOR_RES) * SIM_VER_RES];
+    static uint8_t zbuf[sizeof(raw) + 64];
+    size_t raw_len = 0, z_len = 0;
+    int x, y;
+    FILE *fp;
+
+    for (y = 0; y < SIM_VER_RES; y++) {
+        raw[raw_len++] = 0; /* filter: None */
+        for (x = 0; x < SIM_HOR_RES; x++) {
+            int bit = cdt_frame_get(f, x, y); /* 1=黑 */
+            raw[raw_len++] = bit ? 0x00 : 0xFF;
+        }
+    }
+
+    /* zlib 流：0x78 0x01 + stored deflate 块（每块 ≤65535）+ adler32 */
+    zbuf[z_len++] = 0x78;
+    zbuf[z_len++] = 0x01;
+    {
+        size_t off = 0;
+        while (off < raw_len) {
+            size_t blk = raw_len - off;
+            if (blk > 65535) blk = 65535;
+            int last = (off + blk >= raw_len);
+            zbuf[z_len++] = last ? 1 : 0;
+            zbuf[z_len++] = (uint8_t)(blk & 0xFF);
+            zbuf[z_len++] = (uint8_t)(blk >> 8);
+            zbuf[z_len++] = (uint8_t)(~blk & 0xFF);
+            zbuf[z_len++] = (uint8_t)((~blk >> 8) & 0xFF);
+            memcpy(zbuf + z_len, raw + off, blk);
+            z_len += blk;
+            off += blk;
+        }
+    }
+    {
+        uint32_t ad = sc_adler32(raw, raw_len);
+        zbuf[z_len++] = (uint8_t)(ad >> 24);
+        zbuf[z_len++] = (uint8_t)(ad >> 16);
+        zbuf[z_len++] = (uint8_t)(ad >> 8);
+        zbuf[z_len++] = (uint8_t)ad;
+    }
+
+    fp = fopen(path, "wb");
+    if (fp == NULL) return -1;
+    {
+        uint8_t ihdr[13];
+        uint32_t w = SIM_HOR_RES, h = SIM_VER_RES;
+        ihdr[0] = (uint8_t)(w >> 24);
+        ihdr[1] = (uint8_t)(w >> 16);
+        ihdr[2] = (uint8_t)(w >> 8);
+        ihdr[3] = (uint8_t)w;
+        ihdr[4] = (uint8_t)(h >> 24);
+        ihdr[5] = (uint8_t)(h >> 16);
+        ihdr[6] = (uint8_t)(h >> 8);
+        ihdr[7] = (uint8_t)h;
+        ihdr[8] = 8;  /* bit depth */
+        ihdr[9] = 0;  /* color type: grayscale */
+        ihdr[10] = 0; /* compression */
+        ihdr[11] = 0; /* filter */
+        ihdr[12] = 0; /* interlace */
+        fwrite("\x89PNG\r\n\x1a\n", 1, 8, fp);
+        sc_png_chunk(fp, "IHDR", ihdr, 13);
+        sc_png_chunk(fp, "IDAT", zbuf, (uint32_t)z_len);
+        sc_png_chunk(fp, "IEND", NULL, 0);
+    }
+    fclose(fp);
+    return 0;
+}
+
+/* ---- 回放执行 ---- */
+
+static const char *sc_page_name(const cdt_view_t *v)
+{
+    switch (v->page) {
+        case CDT_PAGE_AGENTS: return "agents";
+        case CDT_PAGE_PLAN: return "plan";
+        case CDT_PAGE_USAGE: return "usage";
+        case CDT_PAGE_LOW_BATTERY: return "low_battery";
+        default: return "now";
+    }
+}
+
+static void sc_json_str(FILE *fp, const char *s)
+{
+    fputc('"', fp);
+    for (; s != NULL && *s != '\0'; s++) {
+        if (*s == '"' || *s == '\\') fputc('\\', fp);
+        fputc(*s, fp);
+    }
+    fputc('"', fp);
+}
+
+/* manifest 一行（契约 §3.4 + 扩展 view 字段供 check_ui 语义断言）：
+ * {"frame": <名|null>, "scenario": …, "frame_index": <n|null>, "at_ms": …,
+ *  "action": …, "seq": <seq|null>, "tag": <可选>, "view": {…}} */
+static void sc_manifest_line(FILE *mf, const char *scen,
+                             const char *frame_name, int frame_index,
+                             long at_ms, const char *action, const char *tag,
+                             const cdt_app_state_t *st, const cdt_view_t *v)
+{
+    fprintf(mf, "{\"frame\": ");
+    if (frame_name != NULL) sc_json_str(mf, frame_name);
+    else fprintf(mf, "null");
+    fprintf(mf, ", \"scenario\": \"%s\", \"frame_index\": ", scen);
+    if (frame_index > 0) fprintf(mf, "%d", frame_index);
+    else fprintf(mf, "null");
+    fprintf(mf, ", \"at_ms\": %ld, \"action\": \"%s\", \"seq\": ", at_ms, action);
+    if (st != NULL) fprintf(mf, "%llu", (unsigned long long)st->seq);
+    else fprintf(mf, "null");
+    if (tag != NULL && tag[0] != '\0') {
+        fprintf(mf, ", \"tag\": ");
+        sc_json_str(mf, tag);
+    }
+    fprintf(mf, ", \"view\": {\"page\": \"%s\", \"status\": ", sc_page_name(v));
+    sc_json_str(mf, v->status_label);
+    fprintf(mf, ", \"project\": ");
+    sc_json_str(mf, v->project);
+    fprintf(mf, ", \"activity\": ");
+    sc_json_str(mf, v->activity);
+    fprintf(mf, ", \"elapsed\": ");
+    sc_json_str(mf, v->elapsed_text);
+    fprintf(mf, ", \"waiting\": ");
+    sc_json_str(mf, v->waiting_text);
+    fprintf(mf, ", \"frozen\": %s, \"cancelled\": %s, \"forced\": %s, "
+                "\"link_stale\": %s, \"link_disconnected\": %s",
+            v->time_frozen ? "true" : "false",
+            v->cancelled ? "true" : "false",
+            v->low_battery_forced ? "true" : "false",
+            v->link_stale ? "true" : "false",
+            v->link_disconnected ? "true" : "false");
+    fprintf(mf, ", \"attention_present\": %s, \"pending\": %u, \"muted\": %s",
+            v->attention_present ? "true" : "false",
+            (unsigned)v->pending_count,
+            v->muted ? "true" : "false");
+    fprintf(mf, ", \"plan\": ");
+    if (v->plan_present) sc_json_str(mf, v->plan_text);
+    else fprintf(mf, "null");
+    fprintf(mf, ", \"usage\": ");
+    sc_json_str(mf, v->usage_text);
+    fprintf(mf, ", \"voltage\": ");
+    sc_json_str(mf, v->voltage_text);
+    fprintf(mf, ", \"ctx\": ");
+    sc_json_str(mf, v->context_text);
+    fprintf(mf, ", \"agents_count\": %u, \"agents_pages\": %u, \"agents_hidden\": %u, "
+                "\"plan_step_count\": %u, \"plan_total\": %u, \"plan_completed\": %u, "
+                "\"plan_pages\": %u, \"usage_count\": %u",
+            (unsigned)v->agents_count, (unsigned)v->agents_pages,
+            (unsigned)v->agents_hidden,
+            (unsigned)v->plan_step_count, (unsigned)v->plan_total,
+            (unsigned)v->plan_completed, (unsigned)v->plan_pages,
+            (unsigned)v->usage_count);
+    /* 结构化行数据（check_ui 语义断言：AGENTS 排序 / PLAN 计数 / USAGE 行） */
+    fprintf(mf, ", \"agents_states\": [");
+    for (uint8_t i = 0; i < v->agents_count; i++) {
+        if (i > 0) fputc(',', mf);
+        sc_json_str(mf, v->agents_rows[i].state_label);
+    }
+    fprintf(mf, "], \"plan_statuses\": [");
+    for (uint8_t i = 0; i < v->plan_step_count; i++) {
+        if (i > 0) fputc(',', mf);
+        const char *ps = "pending";
+        if (v->plan_steps[i].status == (uint8_t)CDT_STEP_STATUS_COMPLETED) ps = "completed";
+        else if (v->plan_steps[i].status == (uint8_t)CDT_STEP_STATUS_IN_PROGRESS) {
+            ps = "in_progress";
+        }
+        sc_json_str(mf, ps);
+    }
+    fprintf(mf, "], \"usage_rows\": [");
+    for (uint8_t i = 0; i < v->usage_count; i++) {
+        const cdt_usage_row_t *r = &v->usage_rows[i];
+        if (i > 0) fputc(',', mf);
+        fprintf(mf, "{\"label\": ");
+        sc_json_str(mf, r->label);
+        fprintf(mf, ", \"pct_present\": %s, \"pct\": %u, \"mins\": %u, "
+                    "\"reset_present\": %s, \"reset_in_s\": %d}",
+                r->pct_present ? "true" : "false", (unsigned)r->pct,
+                (unsigned)r->duration_mins,
+                r->reset_present ? "true" : "false", (int)r->reset_in_s);
+    }
+    fprintf(mf, "]}");
+    fputc('}', mf);
+    fputc('\n', mf);
+}
+
+/* 回放执行：返回退出码（0=完成；1=违规——已在加载期处理） */
+static void sc_file_stem(const char *path, char *out, size_t cap)
+{
+    const char *base = strrchr(path, '/');
+    base = (base != NULL) ? base + 1 : path;
+    const char *dot = strrchr(base, '.');
+    size_t n = (dot != NULL) ? (size_t)(dot - base) : strlen(base);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, base, n);
+    out[n] = '\0';
+}
+
+static int sc_link_severity(int st)
+{
+    return (int)st; /* CONNECTED=1 < STALE=2 < DISCONNECTED=3 */
+}
+
+static void sc_run(lv_display_t *disp, const sim_opts_t *o,
+                   cdt_app_state_t *state, cdt_runtime_t *runtime,
+                   cdt_nav_t *nav)
+{
+    static cdt_frame_t cur, prev;
+    static const char *ACT_NAME[6] = { NULL, "app_state", "battery_sample",
+                                       "key", "link", "advance_time" };
+    char stem[128], path[768], frame_name[160];
+    FILE *mf;
+    cdt_power_fsm_t fsm;
+    cdt_power_params_t params;
+    cdt_power_input_t in;
+    cdt_power_action_t actions;
+    int link_explicit = CDT_LINK_CONNECTED;
+    int have_prev = 0, frame_no = 0, i;
+
+    sc_file_stem(o->scenario, stem, sizeof(stem));
+    snprintf(path, sizeof(path), "%s/%s", o->capture_dir, stem);
+    {
+        char mk[512];
+        mkdir(o->capture_dir, 0755); /* 已存在忽略 */
+        snprintf(mk, sizeof(mk), "%s", path);
+        mkdir(mk, 0755);
+    }
+
+    /* 场景起点：无快照、电池 unknown（未注入 battery_sample 的场景电压显示
+     * "--"，SCENARIOS §2）；last_rx=0，自然计时从虚拟时钟 0 起算 */
+    memset(state, 0, sizeof(*state));
+    g_state = NULL;
+    runtime->battery_valid = false;
+    runtime->battery_mv = 0;
+    runtime->usable_percent = 0;
+    runtime->last_rx_monotonic_ms = 0;
+
+    snprintf(path, sizeof(path), "%s/%s/manifest.jsonl", o->capture_dir, stem);
+    mf = fopen(path, "w");
+    if (mf == NULL) {
+        fprintf(stderr, "[sim] ERROR: cannot write %s\n", path);
+        exit(2);
+    }
+
+    cdt_power_params_init(&params);
+    cdt_power_init(&fsm, &params, false);
+
+    for (i = 0; i < g_sc_count; i++) {
+        const sc_action_t *a = &g_sc_actions[i];
+        cdt_view_t view;
+        const char *tag;
+
+        if (a->kind == SC_ACT_ADVANCE) {
+            g_scenario_clock_ms = a->advance_to_ms;
+        }
+        else if (a->at_ms > g_scenario_clock_ms) {
+            g_scenario_clock_ms = a->at_ms;
+        }
+
+        switch (a->kind) {
+            case SC_ACT_APP_STATE: {
+                cdt_parse_result_t r = cdt_state_parse(
+                    (const uint8_t *)a->state_json, a->state_len, state);
+                if (r != CDT_PARSE_OK) {
+                    fprintf(stderr, "[sim] scenario ERROR (line %ld): AppState "
+                            "解析失败 code %d\n", a->line_no, (int)r);
+                    exit(1);
+                }
+                g_state = state;
+                /* 在线设备只在收到合法新 seq 快照时刷新 last_rx（INTERFACES §4） */
+                runtime->last_rx_monotonic_ms = (uint32_t)a->at_ms;
+                break;
+            }
+            case SC_ACT_BATTERY: {
+                bool in_range = (a->battery_mv >= params.valid_min_mv &&
+                                 a->battery_mv <= params.valid_max_mv);
+                bool disp_valid = (a->battery_valid && in_range);
+                in.kind = CDT_POWER_IN_SAMPLE;
+                in.sample.battery_mv = a->battery_mv;
+                in.sample.valid = disp_valid;
+                in.sample.at_ms = (int64_t)a->at_ms;
+                actions = cdt_power_step(&fsm, &in, (int64_t)a->at_ms);
+                if (actions != CDT_POWER_ACT_NONE) {
+                    char abuf[160];
+                    cdt_power_actions_str(abuf, sizeof(abuf), actions);
+                    printf("[sim] FSM t=%ldms %umV -> %s (%s)\n", a->at_ms,
+                           (unsigned)a->battery_mv, cdt_power_state_str(fsm.state), abuf);
+                }
+                runtime->power_state = fsm.state; /* 保护态只来自 FSM（无捷径） */
+                runtime->battery_valid = disp_valid;
+                runtime->battery_mv = a->battery_mv;
+                runtime->usable_percent = disp_valid
+                    ? usable_percent_from_mv((long)a->battery_mv) : 0;
+                break;
+            }
+            case SC_ACT_KEY:
+                g_pending_key = a->key_long ? (int)CDT_KEY_LONG_PRESS
+                                            : (int)CDT_KEY_SHORT_PRESS;
+                break;
+            case SC_ACT_LINK:
+                link_explicit = a->link_state;
+                break;
+            default:
+                break;
+        }
+
+        /* 自然计时（契约 §3.2：45s→stale、150s→disconnected；link 只提前注入。
+         * 生效值取 显式注入 与 自然老化 中更严重者） */
+        {
+            int natural = CDT_LINK_CONNECTED;
+            uint32_t age = (uint32_t)g_scenario_clock_ms - runtime->last_rx_monotonic_ms;
+            if (age >= 150000) natural = CDT_LINK_DISCONNECTED;
+            else if (age >= 45000) natural = CDT_LINK_STALE;
+            runtime->link_state = (sc_link_severity(natural) > sc_link_severity(link_explicit))
+                                      ? natural : link_explicit;
+        }
+
+        /* KEY 由宿主路径应用（导航/静音写回 + 立即重渲染） */
+        if (g_pending_key != 0) {
+            sim_apply_pending_key(disp);
+        }
+
+        /* present + 整页刷新（确定性：时钟固定、无动画） */
+        cdt_present(g_state, runtime, sim_now_ms(), &view);
+        g_last_view = view;
+        (void)cdt_nav_clamp(nav, &view);
+        cdt_ui_apply_nav(&view, nav);
+        lv_obj_invalidate(lv_screen_active());
+        lv_refr_now(disp);
+
+        if (capture_logical_frame(disp, &cur) != 0) {
+            fprintf(stderr, "[sim] scenario ERROR: capture failed at action %d\n", i + 1);
+            exit(2);
+        }
+
+        tag = (a->tag[0] != '\0') ? a->tag : ACT_NAME[a->kind];
+        if (!have_prev || memcmp(cur.px, prev.px, CDT_FRAME_BYTES) != 0) {
+            frame_no++;
+            snprintf(frame_name, sizeof(frame_name), "%s__f%03d_%s.png", stem,
+                     frame_no, tag);
+            snprintf(path, sizeof(path), "%s/%s/%s", o->capture_dir, stem,
+                     frame_name);
+            if (write_frame_png(&cur, path) != 0) {
+                fprintf(stderr, "[sim] ERROR: cannot write %s\n", path);
+                exit(2);
+            }
+            memcpy(prev.px, cur.px, CDT_FRAME_BYTES);
+            have_prev = 1;
+            sc_manifest_line(mf, stem, frame_name, frame_no, a->at_ms,
+                             ACT_NAME[a->kind], a->tag, g_state, &view);
+        }
+        else {
+            sc_manifest_line(mf, stem, NULL, 0, a->at_ms,
+                             ACT_NAME[a->kind], a->tag, g_state, &view);
+        }
+    }
+    fclose(mf);
+    printf("[sim] scenario '%s': %d actions, %d frames -> %s/%s/\n", stem,
+           g_sc_count, frame_no, o->capture_dir, stem);
+    fflush(stdout);
+}
+
 int main(int argc, char **argv)
 {
     sim_opts_t opts;
@@ -612,6 +1392,16 @@ int main(int argc, char **argv)
     cdt_view_t view;
 
     parse_args(argc, argv, &opts);
+
+    /* --scenario：加载期全量预检（违规 exit 1，不出帧；契约 §3.2） */
+    if (opts.scenario != NULL) {
+        g_scenario_mode = 1;
+        g_scenario_clock_ms = 0;
+        sc_load(opts.scenario);
+        printf("[sim] scenario loaded: %d actions from %s\n", g_sc_count,
+               opts.scenario);
+        fflush(stdout);
+    }
 
     /* --state 文件先于 SDL/LVGL 初始化解析：坏文件直接非 0 退出 */
     if (opts.state_path != NULL) {
@@ -671,6 +1461,17 @@ int main(int argc, char **argv)
         cdt_present(state_ptr, &runtime, sim_now_ms(), &view);
         g_last_view = view;
         cdt_ui_apply_nav(&view, &g_nav);
+    }
+    else if (opts.scenario != NULL) {
+        cdt_app_state_t sc_state;
+
+        memset(&sc_state, 0, sizeof(sc_state));
+        cdt_ui_init();
+        cdt_nav_init(&g_nav, runtime.selected_page);
+        /* 基线（无快照占位渲染）不单独出帧；逐 action 应用后按变化出帧 */
+        sc_run(disp, &opts, &sc_state, &runtime, &g_nav);
+        sim_shutdown(disp, &opts, sdl_capture_env);
+        return 0;
     }
     else {
         sim_build_placeholder_ui();

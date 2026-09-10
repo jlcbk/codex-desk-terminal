@@ -47,6 +47,13 @@ SDL_VIDEODRIVER=dummy ./build/simulator/codex-display-sim \
 simulator/smoke_offscreen.sh
 # 等价手工命令：
 SDL_VIDEODRIVER=dummy SIM_AUTO_QUIT_MS=2000 ./build/simulator/codex-display-sim
+
+# P2.4/P2.5：场景回放 → 确定性帧 + manifest（golden/回归入口）
+SDL_VIDEODRIVER=dummy ./build/simulator/codex-display-sim \
+  --scenario tests/fixtures/scenarios/S03_working.jsonl \
+  --capture-dir artifacts/ui/replay
+uv run --python 3.12 python scripts/check_ui.py \
+    --golden tests/golden --actual artifacts/ui/replay
 ```
 
 ### 命令行参数（P2.1；P2.2/P2.3 追加标注）
@@ -61,6 +68,8 @@ SDL_VIDEODRIVER=dummy SIM_AUTO_QUIT_MS=2000 ./build/simulator/codex-display-sim
 | `--capture-frame <out.bmp>` | 退出前把 400×300 逻辑帧经 `cdt_frame_t`（shared/display 公共单色格式：1bpp、行 50 字节、MSB=左、1=黑）存 1bpp BMP（调色板 0=白 1=黑）。供 P2.4 golden 流使用，**不是 SDL 截图** |
 | `--quit-after-ms <N>` | N 毫秒后自动退出（旧环境变量 SIM_AUTO_QUIT_MS 仍生效） |
 | `--fixed-clock <ms>` | 虚拟单调时钟恒为 N ms（时长不随真实时间变化；跨机器 golden 抓帧确定性，P2.4 用） |
+| `--scenario <file.jsonl>` | （P2.4 集成，A6）注入 JSONL 回放（INTERFACES §4：app_state/battery_sample/key/link/advance_time；先全量预检再回放，违规退出码 1 不出帧；虚拟时钟由 at_ms/advance_time 驱动，确定性）。电池采样经真实 Power FSM；45s/150s 无快照自然老化（link 动作只提前注入）；与 `--fixed-clock`/`--state`/`--battery-seq` 互斥 |
+| `--capture-dir <dir>` | （P2.4 集成，A6）`--scenario` 必配：帧与 manifest 输出到 `<dir>/<场景主名>/`。每条 action 后 ViewModel 有像素变化才出帧（400×300 逻辑单色 PNG，无压缩差异字节确定）；manifest.jsonl 每行 frame/scenario/frame_index/at_ms/action/seq + 扩展 tag/view 字段（页面/状态词/时长/链路/静音/AGENTS 排序/PLAN 计数/USAGE 行）供 check_ui 语义断言 |
 
 环境变量：
 

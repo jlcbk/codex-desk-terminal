@@ -1,0 +1,42 @@
+# S09_low_battery — 电池优先于 NEEDS YOU；强制页不可被普通切换覆盖（SCENARIOS §3 S09）
+# 电池 trace 满足 §7.2 连续性（临界段 1Hz、间隔 ≤2s）；短按被拒无像素变化 → 无 golden 帧，
+# 由 manifest view 断言覆盖（页面仍 low_battery）；长按只静音（MUTED 标签变化）。
+{"at_ms":0,"action":"app_state","tag":"needs_you","payload":{"schema_version":1,"kind":"state","bridge_epoch":"scenario-001","seq":1,"generated_at_ms":1789000000000,"source":{"kind":"mock","connected":true,"stale":false,"last_event_at_ms":1789000000000},"selected_thread_id":"thread-demo","threads_total":1,"threads_truncated":false,"threads":[{"id":"thread-demo","turn_id":"turn-001","project":"codex-desk-terminal","state":"needs_you","activity":"等待批准运行命令","updated_at_ms":1789000000000,"elapsed_ms":0,"waiting_ms":0,"end_reason":null,"attention":{"pending_count":1,"summary":"运行命令需要批准"},"plan":{"total":0,"truncated":false,"steps":[]},"context":{"used_tokens":null,"capacity_tokens":null,"used_percent":null}}],"usage":{"available":true,"updated_at_ms":1789000000000,"windows_total":1,"windows_truncated":false,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789003600000}]}}}
+{"at_ms":1000,"action":"battery_sample","payload":{"battery_mv":3980,"battery_valid":true}}
+{"at_ms":2000,"action":"battery_sample","payload":{"battery_mv":3720,"battery_valid":true}}
+{"at_ms":3000,"action":"battery_sample","tag":"low_warn3700","payload":{"battery_mv":3700,"battery_valid":true}}
+{"at_ms":4000,"action":"battery_sample","payload":{"battery_mv":3650,"battery_valid":true}}
+{"at_ms":5000,"action":"battery_sample","payload":{"battery_mv":3601,"battery_valid":true}}
+{"at_ms":6000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":7000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":8000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":9000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":10000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":11000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":12000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":13000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":14000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":15000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":16000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":17000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":18000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":19000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":20000,"action":"battery_sample","tag":"critical_hold","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":21000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":22000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":23000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":24000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":25000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":26000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":27000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":28000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":29000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":30000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":31000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":32000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":33000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":34000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":35000,"action":"battery_sample","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":36000,"action":"battery_sample","tag":"forced_page","payload":{"battery_mv":3600,"battery_valid":true}}
+{"at_ms":36200,"action":"key","tag":"key_rejected","payload":{"key":"short_press"}}
+{"at_ms":36500,"action":"key","tag":"key_long_mute","payload":{"key":"long_press"}}

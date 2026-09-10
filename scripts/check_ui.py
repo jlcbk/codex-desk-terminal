@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""check_ui.py — UI golden/actual 像素回归比较（P2.4 工具部分，A5）。
+"""check_ui.py — UI golden/actual 像素回归 + 语义断言比较（P2.4，A5 工具 / A6 集成）。
 
-契约真源：tests/UI_CONTRACT.md §2（CLI、帧配对、输出、退出码）、tests/SCENARIOS.md §2/§5、
-docs/DEVELOPMENT_PLAN.md §8。帧格式：shared/display/cdt_frame.h —— 400×300、1bpp、
-每行 50 字节、行优先、字节内 MSB=左像素、1=黑/0=白，共 15000 字节。
+契约真源：tests/UI_CONTRACT.md §2/§4（CLI、帧配对、输出、退出码、逐帧断言）、
+tests/SCENARIOS.md §2/§3/§5、docs/DEVELOPMENT_PLAN.md §8。帧格式：
+shared/display/cdt_frame.h —— 400×300、1bpp、每行 50 字节、行优先、
+字节内 MSB=左像素、1=黑/0=白，共 15000 字节。
 
 用法：
     python scripts/check_ui.py --golden tests/golden --actual artifacts/ui [--scenario S01]
@@ -13,14 +14,18 @@ docs/DEVELOPMENT_PLAN.md §8。帧格式：shared/display/cdt_frame.h —— 400
 输入图像：P4 PBM（1=黑，与逻辑帧同 packing）与 PNG（灰度 1/8bit，按「非白=黑」二值化）。
 尺寸必须恰为 400×300，否则该帧 FAIL（防布局漂移）。
 
-退出码（契约 §2.4）：0=全部场景 PASS；1=存在像素差异/缺帧/多余帧/尺寸不符等测试失败；
-2=环境或用法错误（golden 目录不存在、文件不可读等），不得用于掩盖回归。
+语义断言（UI_CONTRACT §2.3/§4）：actual 目录内 manifest.jsonl 的扩展 view 字段
+（模拟器回放产出：页面/状态词/时长/链路/静音/AGENTS 排序/PLAN 计数/USAGE 行）
+按 SEMANTIC_TABLE（与 SCENARIOS.md §3 断言要点一一对应）逐场景断言；另对全部帧
+应用固定几何像素探针（反白/粗框/横幅，坐标=§6 布局契约）。无 manifest（如自检
+合成帧）时语义记 n/a，不阻塞像素比较。
 
-红线（契约 §2.6）：对 --golden 目录永远只读；不提供 --update-golden / --accept 类参数；
-禁止自动接受或重生成 golden。
+退出码（契约 §2.4）：0=全部场景 PASS；1=存在像素差异/缺帧/多余帧/尺寸不符/
+语义断言失败；2=环境或用法错误（golden 目录不存在、文件不可读等），不得用于
+掩盖回归。
 
-语义断言表（tests/SCENARIOS.md §3 逐场景断言要点）按计划在 P2 集成时随 SCENARIOS 同步接入；
-本版本仅做像素比较与帧完整性检查，输出行中「语义=未实现(P2)」如实标注。
+红线（契约 §2.6）：对 --golden 目录永远只读；不提供 --update-golden / --accept
+类参数；禁止自动接受或重生成 golden。
 """
 from __future__ import annotations
 
@@ -58,9 +63,11 @@ SKIP_DIR_NAMES = {"selftest"}   # 契约 §2.5 自检证据目录，避免污染
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 _FRAME_RE = re.compile(r"^(?P<scen>.+?)__f(?P<idx>\d{3,})_(?P<tag>[0-9A-Za-z_-]+)$")
 
-# 1 字节 → 8 个灰度输出字节（MSB=左像素），黑=0xFF/白=0x00
+# 1 字节 → 8 个灰度输出字节（MSB=左像素），黑=0x00/白=0xFF
+# （P2.4 集成修正：原实现把 1=黑 映到 0xFF，expected/diff 两图黑白颠倒，
+#   违反 SCENARIOS §5.8「diff 图黑=差异、白=一致」；像素比较用逻辑帧，不受影响）
 _EXP = tuple(
-    bytes(0xFF if (i >> (7 - j)) & 1 else 0x00 for j in range(8)) for i in range(256)
+    bytes(0x00 if (i >> (7 - j)) & 1 else 0xFF for j in range(8)) for i in range(256)
 )
 
 
@@ -366,6 +373,529 @@ def write_pair_outputs(actual_path: Path, golden_raster: bytes, xor_rows: list) 
     write_png(d / (stem + DIFF_SUFFIX), WIDTH, HEIGHT, canonical_to_gray_rows(xor_raster))
 
 
+# ---------------------------------------------------------------- 语义断言（UI_CONTRACT §2.3/§4；真源 tests/SCENARIOS.md §3 v1 2026-09-10）
+
+def _probe(raster: bytes | None, x: int, y: int, black: bool) -> str | None:
+    """固定几何像素探针（坐标=INTERFACES §6 布局契约）。raster 缺失跳过。"""
+    if raster is None:
+        return None
+    v = get_px(raster, x, y)
+    if v < 0:
+        return f"探针({x},{y})越界"
+    if bool(v) != black:
+        return f"探针({x},{y})期望{'黑' if black else '白'}实{'黑' if v else '白'}"
+    return None
+
+
+def run_frame_rules(view: dict, raster: bytes | None) -> list[str]:
+    """通用帧级规则：页面优先级/强调样式/横幅 与固定几何互证（§2.3）。"""
+    fails: list[str] = []
+    page, status = view.get("page"), view.get("status")
+    if page == "low_battery":
+        if not view.get("forced"):
+            fails.append("低压页未标记 forced")
+        f = _probe(raster, 200, 50, True)  # LOW BATTERY 反白标题框
+        if f:
+            fails.append(f)
+    elif page == "now" and status == "NEEDS YOU":
+        f = _probe(raster, 200, 90, True)  # 主状态区反白（黑底白字）
+        if f:
+            fails.append(f)
+    elif page == "now" and status == "ERROR":
+        f = _probe(raster, 9, 90, True)  # 3px 黑色粗框左边
+        f2 = _probe(raster, 200, 90, False)  # 框内白底
+        if f:
+            fails.append(f)
+        if f2:
+            fails.append(f2)
+    if view.get("link_disconnected") or view.get("link_stale"):
+        f = _probe(raster, 200, 46, True)  # 链路提示条反白
+        if f:
+            fails.append(f)
+    elif page == "now":
+        f = _probe(raster, 200, 46, False)  # fresh 时提示条区域应为白
+        if f:
+            fails.append(f)
+    return fails
+
+
+def _rec(records, tag) -> dict | None:
+    for r in records:
+        if r.get("tag") == tag:
+            return r
+    return None
+
+
+def _view(rec) -> dict:
+    return rec.get("view") or {}
+
+
+def semantic_S01(records, raster_by_idx) -> list[str]:
+    v = _view(records[-1])
+    return [
+        *( ["末帧状态词非 IDLE"] if v.get("status") != "IDLE" else [] ),
+        *( ["无任务项目应显示 --"] if v.get("project") != "--" else [] ),
+        *( ["无任务活动应显示 --"] if v.get("activity") != "--" else [] ),
+        *( ["无任务时长应显示 --"] if v.get("elapsed") != "--" else [] ),
+        *( ["未注入电池电压应显示 --"] if v.get("voltage") != "--" else [] ),
+        *( ["额度缺失应显示 --"] if v.get("usage") == "--" else [] ),
+    ]
+
+
+def semantic_S02(records, raster_by_idx) -> list[str]:
+    f1, f2 = _rec(records, "thinking"), _rec(records, "elapsed60s")
+    fails = []
+    if f1 and _view(f1).get("status") != "THINKING":
+        fails.append("状态词非 THINKING")
+    if f2:
+        v = _view(f2)
+        if v.get("elapsed") != "01:00":
+            fails.append(f"60s 后运行时长应 01:00，实 {v.get('elapsed')}")
+        if v.get("frozen"):
+            fails.append("fresh 链路时长不应冻结")
+    else:
+        fails.append("缺 elapsed60s checkpoint")
+    return fails
+
+
+def semantic_S03(records, raster_by_idx) -> list[str]:
+    v = _view(records[-1])
+    return [
+        *( ["状态词非 WORKING"] if v.get("status") != "WORKING" else [] ),
+        *( ["PLAN 摘要应 PLAN 1/3"] if v.get("plan") != "PLAN 1/3" else [] ),
+        *( ["当前活动摘要缺失"] if v.get("activity") in ("", "--") else [] ),
+    ]
+
+
+def semantic_S04(records, raster_by_idx) -> list[str]:
+    b, a = _rec(records, "before"), _rec(records, "after")
+    fails = []
+    if b and _view(b).get("plan") != "PLAN 1/3":
+        fails.append("更新前 PLAN 摘要应 1/3")
+    if a:
+        v = _view(a)
+        if v.get("status") != "WORKING":
+            fails.append("PLAN UPDATE 后状态词应保持 WORKING")
+        if v.get("plan") != "PLAN 2/4":
+            fails.append(f"更新后 PLAN 摘要应 2/4，实 {v.get('plan')}")
+        if b and v.get("activity") == _view(b).get("activity"):
+            fails.append("更新后活动摘要未更新")
+    else:
+        fails.append("缺 after checkpoint")
+    return fails
+
+
+def semantic_S05(records, raster_by_idx) -> list[str]:
+    f1, f2 = _rec(records, "needs_you"), _rec(records, "waiting60s")
+    fails = []
+    if f1 and _view(f1).get("status") != "NEEDS YOU":
+        fails.append("状态词非 NEEDS YOU")
+    if f2:
+        v = _view(f2)
+        if v.get("waiting") != "01:00":
+            fails.append(f"60s 后等待时长应 01:00，实 {v.get('waiting')}")
+        if not v.get("attention_present"):
+            fails.append("等待提醒摘要缺失")
+    else:
+        fails.append("缺 waiting60s checkpoint")
+    return fails
+
+
+def semantic_S06(records, raster_by_idx) -> list[str]:
+    fails = []
+    d = _rec(records, "done")
+    if d:
+        v = _view(d)
+        if v.get("status") != "DONE":
+            fails.append("状态词非 DONE")
+        if v.get("attention_present"):
+            fails.append("终态后 pending 未清零")
+    else:
+        fails.append("缺 done checkpoint")
+    for r in records:  # 终态后时长不再推进（含 keepalive/advance 无帧记录）
+        v = _view(r)
+        if v.get("elapsed") not in (None, "00:00"):
+            fails.append(f"终态时长应定格，实 {v.get('elapsed')}")
+            break
+    return fails
+
+
+def semantic_S07(records, raster_by_idx) -> list[str]:
+    v = _view(records[-1])
+    return [
+        *( ["状态词非 ERROR"] if v.get("status") != "ERROR" else [] ),
+        *( ["超长错误文本未被截断(缺..)"] if not str(v.get("activity", "")).endswith("..") else [] ),
+    ]
+
+
+def semantic_S08(records, raster_by_idx) -> list[str]:
+    n, c = _rec(records, "needs_you"), _rec(records, "cancelled")
+    fails = []
+    if n and _view(n).get("status") != "NEEDS YOU":
+        fails.append("前置帧非 NEEDS YOU")
+    if c:
+        v = _view(c)
+        if v.get("status") != "IDLE":
+            fails.append("取消后状态词应为 IDLE")
+        if not v.get("cancelled"):
+            fails.append("取消标志缺失（应显示已取消）")
+    else:
+        fails.append("缺 cancelled checkpoint")
+    return fails
+
+
+def semantic_S09(records, raster_by_idx) -> list[str]:
+    fails = []
+    lw, ch = _rec(records, "low_warn3700"), _rec(records, "critical_hold")
+    fp, kr, km = (_rec(records, "forced_page"), _rec(records, "key_rejected"),
+                  _rec(records, "key_long_mute"))
+    if lw:
+        v = _view(lw)
+        if v.get("status") != "NEEDS YOU" or v.get("page") != "now":
+            fails.append("LOW_WARN 应保持 NEEDS YOU 业务页")
+        if v.get("voltage") != "3.70V":
+            fails.append(f"低压警告电压应 3.70V，实 {v.get('voltage')}")
+    else:
+        fails.append("缺 low_warn3700 checkpoint")
+    if ch and _view(ch).get("voltage") != "3.60V":
+        fails.append("critical_hold 计时中电压应 3.60V")
+    if fp:
+        v = _view(fp)
+        if v.get("page") != "low_battery" or not v.get("forced"):
+            fails.append("持续低压 30s 应出强制页")
+        if v.get("status") != "LOW BATTERY":
+            fails.append("强制页状态词应 LOW BATTERY")
+    else:
+        fails.append("缺 forced_page checkpoint")
+    if kr is None:
+        fails.append("缺 key_rejected 记录")
+    elif _view(kr).get("page") != "low_battery":
+        fails.append("短按被拒后应仍停留强制页")
+    if km:
+        v = _view(km)
+        if not v.get("muted") or v.get("page") != "low_battery":
+            fails.append("长按应只静音且不解除强制页")
+    else:
+        fails.append("缺 key_long_mute checkpoint")
+    return fails
+
+
+def semantic_S10(records, raster_by_idx) -> list[str]:
+    fails = []
+    vr, iv = _rec(records, "valid_ref"), _rec(records, "invalid_sample")
+    oor = _rec(records, "out_of_range")
+    if vr and _view(vr).get("voltage") != "3.90V":
+        fails.append("有效采样应显示 3.90V")
+    if iv:
+        v = _view(iv)
+        if v.get("voltage") != "--":
+            fails.append(f"无效采样电压应 --，实 {v.get('voltage')}")
+    else:
+        fails.append("缺 invalid_sample checkpoint")
+    if oor:
+        v = _view(oor)
+        if v.get("voltage") != "--":
+            fails.append(f"范围外采样电压应 --，实 {v.get('voltage')}")
+    else:
+        fails.append("缺 out_of_range 记录")
+    return fails
+
+
+def semantic_S11(records, raster_by_idx) -> list[str]:
+    fails = []
+    on, dc, rs = (_rec(records, "online"), _rec(records, "disconnected"),
+                  _rec(records, "resync"))
+    if on:
+        v = _view(on)
+        if v.get("status") != "WORKING" or v.get("frozen"):
+            fails.append("在线帧应 WORKING 且不冻结")
+    if dc:
+        v = _view(dc)
+        if not v.get("link_disconnected"):
+            fails.append("150s 无快照应判定断连")
+        if v.get("status") != "WORKING":
+            fails.append("断连不得把任务改成 IDLE/DONE")
+        if not v.get("frozen"):
+            fails.append("断连应冻结计时")
+    else:
+        fails.append("缺 disconnected checkpoint")
+    if rs:
+        v = _view(rs)
+        if v.get("link_disconnected") or v.get("frozen"):
+            fails.append("恢复后应解除断连并解冻")
+        if v.get("status") != "WORKING":
+            fails.append("恢复后业务内容应保留")
+    else:
+        fails.append("缺 resync checkpoint")
+    return fails
+
+
+def semantic_S12(records, raster_by_idx) -> list[str]:
+    fails = []
+    fr, st, rc = (_rec(records, "fresh"), _rec(records, "stale"),
+                  _rec(records, "recovered"))
+    if fr and (_view(fr).get("frozen") or _view(fr).get("link_stale")):
+        fails.append("基准帧应 fresh")
+    if st:
+        v = _view(st)
+        if not v.get("link_stale"):
+            fails.append("45s 应标 stale 提示")
+        if v.get("status") != "WORKING":
+            fails.append("陈旧提示应独立于业务状态")
+        if not v.get("frozen"):
+            fails.append("陈旧应冻结计时")
+    else:
+        fails.append("缺 stale checkpoint")
+    if rc:
+        v = _view(rc)
+        if v.get("link_stale") or v.get("frozen"):
+            fails.append("新 seq 快照后应恢复 fresh")
+    else:
+        fails.append("缺 recovered checkpoint")
+    return fails
+
+
+def semantic_S13(records, raster_by_idx) -> list[str]:
+    fails = []
+    p1 = _rec(records, "agents_p1")
+    if p1:
+        v = _view(p1)
+        expect = ["NEEDS YOU", "NEEDS YOU", "ERROR", "WORKING", "WORKING",
+                  "DONE", "IDLE", "IDLE"]
+        if v.get("agents_states") != expect:
+            fails.append("AGENTS 排序不符（needs_you→error→working→done→idle）")
+        if v.get("agents_pages") != 2 or v.get("agents_hidden") != 2:
+            fails.append("分页/裁剪标记应为 2 页 + 还有 2 个")
+    else:
+        fails.append("缺 agents_p1 checkpoint")
+    p2 = _rec(records, "agents_p2")
+    if p2 and _view(p2).get("page") != "agents":
+        fails.append("第二子页应仍在 AGENTS")
+    nm = _rec(records, "next_main")
+    if nm and _view(nm).get("page") != "plan":
+        fails.append("末子页后应切 PLAN（按选中任务生成）")
+    return fails
+
+
+def semantic_S14(records, raster_by_idx) -> list[str]:
+    pp = _rec(records, "plan_page")
+    if not pp:
+        return ["缺 plan_page checkpoint"]
+    v = _view(pp)
+    return [
+        *( ["应停留 PLAN 页"] if v.get("page") != "plan" else [] ),
+        *( ["空计划 total 应为 0"] if v.get("plan_total") != 0 else [] ),
+        *( ["空计划不应有步骤残留"] if v.get("plan_step_count") != 0 else [] ),
+    ]
+
+
+def semantic_S15(records, raster_by_idx) -> list[str]:
+    fails = []
+    p1, p2 = _rec(records, "plan_p1"), _rec(records, "plan_p2")
+    if p1:
+        v = _view(p1)
+        if v.get("page") != "plan":
+            fails.append("应停留 PLAN 页")
+        if v.get("plan_completed") != 3 or v.get("plan_total") != 14:
+            fails.append("完成数应只数 completed（3/14）")
+        if v.get("plan_pages") != 2:
+            fails.append("8 可见步骤应 2 子页")
+        sts = v.get("plan_statuses") or []
+        if sts[:4] != ["completed", "completed", "completed", "in_progress"]:
+            fails.append("步骤原始顺序/状态不符")
+    else:
+        fails.append("缺 plan_p1 checkpoint")
+    if p2 and _view(p2).get("page") != "plan":
+        fails.append("PLAN 第二子页应仍在 PLAN")
+    return fails
+
+
+def semantic_S16(records, raster_by_idx) -> list[str]:
+    v = _view(records[-1])
+    proj = str(v.get("project", ""))
+    return [
+        *( ["状态词非 WORKING"] if v.get("status") != "WORKING" else [] ),
+        *( ["长项目名未被截断省略"] if not proj.endswith("..") else [] ),
+        *( ["截断后仍越界（>24 列+..）"] if len(proj) > 26 else [] ),
+    ]
+
+
+def semantic_S17(records, raster_by_idx) -> list[str]:
+    v = _view(records[-1])
+    act = str(v.get("activity", ""))
+    return [
+        *( ["中文未渲染（无 CJK 字符）"]
+           if not any("\u4e00" <= c <= "\u9fff" for c in act) else [] ),
+        *( ["超长混排文本未被截断(缺..)"] if not act.endswith("..") else [] ),
+        *( ["全角标点丢失"] if "，" not in act else [] ),
+        *( ["状态词非 WORKING"] if v.get("status") != "WORKING" else [] ),
+        # UTF-8 码点安全由 presenter trunc_cols 单测与 golden 像素证明
+        #（manifest 的 JSON 字符串不可能含残缺序列）；
+        # emoji→可见替代符为 UI 层 ascii_safe 行为（view 保留原始码点），
+        # 由 golden 像素证明（gen_font_noto_sc 刻意不含 U+1F680）
+    ]
+
+
+def semantic_S18(records, raster_by_idx) -> list[str]:
+    up = _rec(records, "usage_page")
+    if not up:
+        return ["缺 usage_page checkpoint"]
+    v = _view(up)
+    return [
+        *( ["应停留 USAGE 页"] if v.get("page") != "usage" else [] ),
+        *( ["额度缺失应显示 --"] if v.get("usage") != "--" else [] ),
+        *( ["context 缺失应 CTX --"] if v.get("ctx") != "CTX --" else [] ),
+    ]
+
+
+def semantic_S19(records, raster_by_idx) -> list[str]:
+    up = _rec(records, "usage_page")
+    if not up:
+        return ["缺 usage_page checkpoint"]
+    v = _view(up)
+    rows = v.get("usage_rows") or []
+    if not rows:
+        return ["USAGE 页无窗口行"]
+    r0 = rows[0]
+    fails = []
+    if r0.get("pct") != 0 or not r0.get("pct_present"):
+        fails.append("0% 应按数据显示（不编造）")
+    if r0.get("mins") != 300:
+        fails.append("窗口长度应来自数据 300m")
+    # reset 倒计时 = resets_at_ms - 业务时钟（快照 generated_at + fresh 增量 = T0+at_ms）
+    expect = (4 * 3600000 - up.get("at_ms", 0)) // 1000
+    if not r0.get("reset_present") or r0.get("reset_in_s") != expect:
+        fails.append(f"reset 倒计时应 {expect}s，实 {r0.get('reset_in_s')}")
+    return fails
+
+
+def semantic_S20(records, raster_by_idx) -> list[str]:
+    up = _rec(records, "usage_page")
+    if not up:
+        return ["缺 usage_page checkpoint"]
+    rows = _view(up).get("usage_rows") or []
+    if not rows:
+        return ["USAGE 页无窗口行"]
+    return (["100% 应顶格保留"] if rows[0].get("pct") != 100 else [])
+
+
+def semantic_S21(records, raster_by_idx) -> list[str]:
+    fails = []
+    ea, rs = _rec(records, "epoch_a"), _rec(records, "restarting")
+    eb, rn = _rec(records, "epoch_b"), _rec(records, "resync")
+    proj = _view(ea).get("project") if ea else None
+    if ea and _view(ea).get("status") != "WORKING":
+        fails.append("epoch A 基准应 WORKING")
+    if rs:
+        v = _view(rs)
+        if not v.get("link_disconnected"):
+            fails.append("重启中断连提示缺失")
+        if v.get("status") != "WORKING":
+            fails.append("断连期间不得回退空白/IDLE")
+    else:
+        fails.append("缺 restarting checkpoint")
+    if eb:
+        v = _view(eb)
+        if v.get("status") != "WORKING":
+            fails.append("新 epoch 快照未被接受")
+        if proj is not None and v.get("project") != proj:
+            fails.append("新 epoch 后业务内容未收敛")
+    else:
+        fails.append("缺 epoch_b checkpoint")
+    if rn:
+        v = _view(rn)
+        if v.get("link_disconnected"):
+            fails.append("链路恢复后提示应消失")
+    else:
+        fails.append("缺 resync checkpoint")
+    return fails
+
+
+def semantic_Slifecycle(records, raster_by_idx) -> list[str]:
+    """P2.5 五阶段 checkpoint（S_lifecycle.jsonl 头部声明；UI_CONTRACT §4）。"""
+    fails = []
+    tags = ("idle", "working", "plan_update", "needs_you", "done",
+            "low_battery", "key_rejected", "key_long_mute")
+    for t in tags:
+        if _rec(records, t) is None:
+            fails.append(f"缺 checkpoint {t}")
+    if fails:
+        return fails
+    ck = {t: _view(_rec(records, t)) for t in tags}
+    if ck["idle"].get("status") != "IDLE":
+        fails.append("idle 起始快照应 IDLE")
+    if ck["working"].get("status") != "WORKING":
+        fails.append("working 阶段状态词不符")
+    if ck["plan_update"].get("status") != "WORKING":
+        fails.append("PLAN UPDATE 未保持 WORKING")
+    if ck["plan_update"].get("plan") != "PLAN 1/3":
+        fails.append(f"PLAN UPDATE 内容未生效，实 {ck['plan_update'].get('plan')}")
+    if ck["needs_you"].get("status") != "NEEDS YOU":
+        fails.append("needs_you 阶段状态词不符")
+    if not ck["done"].get("frozen") and ck["done"].get("cancelled"):
+        fails.append("done 冻结/终态标志不符")
+    if ck["done"].get("elapsed") != "00:02":
+        fails.append(f"终态时长应定格 00:02，实 {ck['done'].get('elapsed')}")
+    if ck["low_battery"].get("page") != "low_battery":
+        fails.append("最终低压页未出现")
+    if ck["key_rejected"].get("page") != "low_battery":
+        fails.append("短按被拒后应停留强制页")
+    if not ck["key_long_mute"].get("muted"):
+        fails.append("长按静音未生效")
+    return fails
+
+
+# 场景 → 语义断言（与 SCENARIOS.md §3 断言要点一一对应；SCENARIOS 更新须同步本表）
+SEMANTIC_TABLE = {
+    "S01_idle": semantic_S01,
+    "S02_thinking": semantic_S02,
+    "S03_working": semantic_S03,
+    "S04_plan_update": semantic_S04,
+    "S05_needs_you": semantic_S05,
+    "S06_done": semantic_S06,
+    "S07_error": semantic_S07,
+    "S08_cancelled": semantic_S08,
+    "S09_low_battery": semantic_S09,
+    "S10_battery_unknown": semantic_S10,
+    "S11_disconnected": semantic_S11,
+    "S12_stale": semantic_S12,
+    "S13_multi_agents": semantic_S13,
+    "S14_empty_plan": semantic_S14,
+    "S15_long_plan": semantic_S15,
+    "S16_long_project_name": semantic_S16,
+    "S17_unicode": semantic_S17,
+    "S18_usage_missing": semantic_S18,
+    "S19_usage_0": semantic_S19,
+    "S20_usage_100": semantic_S20,
+    "S21_bridge_restart": semantic_S21,
+    "S_lifecycle": semantic_Slifecycle,
+}
+
+
+def run_semantics(scen: str, records: list, raster_by_idx: dict) -> list[str]:
+    """逐场景语义断言。无 manifest view（合成帧等）→ 返回 None（记 n/a）。"""
+    views = [r.get("view") for r in records if r.get("frame")]
+    if not records or all(v is None for v in views):
+        return None
+    fails: list[str] = []
+    # 通用帧级规则（像素互证；只对已出帧做像素探针）
+    for r in records:
+        v = r.get("view")
+        if v is None:
+            continue
+        if r.get("frame"):
+            m = parse_frame_stem(Path(r["frame"]).stem)
+            idx = m[1]
+            fails += run_frame_rules(v, raster_by_idx.get(idx))
+        else:
+            # 无帧 action（如短按被拒）：仅语义规则，无像素
+            fails += run_frame_rules(v, None)
+    fn = SEMANTIC_TABLE.get(scen)
+    if fn is not None:
+        fails += fn(records, raster_by_idx)
+    return fails
+
+
 # ---------------------------------------------------------------- 扫描、配对、manifest
 
 def parse_frame_stem(stem: str):
@@ -432,16 +962,18 @@ def scenario_selected(name: str, flt: str | None) -> bool:
 
 
 def collect_manifest(actual_root: Path, scenario: str | None):
-    """消费 actual 目录内的 manifest.jsonl（契约 §3.4/§2.2）。
+    """消费 actual 目录内的 manifest.jsonl（契约 §3.4/§2.2 + 扩展 view 字段）。
 
-    返回 (issues, idx_override, declared)：
+    返回 (issues, idx_override, declared, records)：
       issues       [(scenario, 帧标签, 原因)] —— 声明帧缺失/声明与实际不符（§4.2：FAIL）
       idx_override relpath → frame_index（帧名无 __f 时以 manifest 为准）
       declared     scenario → set(实际存在的帧 relpath)
+      records      scenario → [manifest 行 dict]（含无帧 action 行；view/tag/action）
     """
     issues: list = []
     idx_override: dict = {}
     declared: dict = {}
+    records: dict = {}
     for mf in sorted(actual_root.rglob(MANIFEST_NAME)):
         rel_parts = mf.relative_to(actual_root).parts[:-1]
         if any(pp in SKIP_DIR_NAMES or pp.startswith(".") for pp in rel_parts):
@@ -458,9 +990,11 @@ def collect_manifest(actual_root: Path, scenario: str | None):
             if not isinstance(obj, dict):
                 raise EnvErr(f"{mf}:{lineno}: manifest 行必须是 JSON 对象")
             frame = obj.get("frame")
+            scen = obj.get("scenario") or (
+                parse_frame_stem(Path(frame).stem)[0] if frame else "?")
+            records.setdefault(scen, []).append(obj)
             if not frame or not isinstance(frame, str):
                 continue  # 无 ViewModel 变化的 action 也记入 manifest（§3.3），无帧文件
-            scen = obj.get("scenario") or parse_frame_stem(Path(frame).stem)[0] or "?"
             cand = mf.parent / frame
             path = cand if cand.is_file() else (actual_root / frame)
             if not path.is_file():
@@ -485,20 +1019,20 @@ def collect_manifest(actual_root: Path, scenario: str | None):
                     idx_override[rel] = mi
             if rel is not None:
                 declared.setdefault(scen, set()).add(rel)
-    return issues, idx_override, declared
+    return issues, idx_override, declared, records
 
 
 def compare_pair(gref: FrameRef, aref: FrameRef):
-    """比较一对帧。返回 (差异像素数或 None, 失败原因或 None)。"""
+    """比较一对帧。返回 (差异像素数或 None, 失败原因或 None, actual 逻辑帧或 None)。"""
     gf = load_frame(gref.path)
     af = load_frame(aref.path)
     if (gf.w, gf.h) != (WIDTH, HEIGHT) or (af.w, af.h) != (WIDTH, HEIGHT):
-        return None, f"尺寸不符(golden {gf.w}x{gf.h} / actual {af.w}x{af.h})"
+        return None, f"尺寸不符(golden {gf.w}x{gf.h} / actual {af.w}x{af.h})", None
     xor_rows, total = compare_rasters(gf.raster, af.raster)
     write_pair_outputs(aref.path, gf.raster, xor_rows)
     if total:
-        return total, "像素差异"
-    return 0, None
+        return total, "像素差异", af.raster
+    return 0, None, af.raster
 
 
 def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
@@ -510,7 +1044,7 @@ def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
     ascan = scan_frames(actual_dir)
     if not gscan:
         raise EnvErr(f"golden 目录没有任何帧图（{golden_dir}）")
-    m_issues, idx_override, declared = collect_manifest(actual_dir, scenario)
+    m_issues, idx_override, declared, records = collect_manifest(actual_dir, scenario)
     # 契约 §2.2：golden f<NNN> ↔ manifest frame_index。仅在 golden 侧为多帧序号
     # 且按文件名找不到 actual 时兜底使用；不改动单帧场景（golden 无 __f）的配对。
     rel_by_midx = {mi: rel for rel, mi in idx_override.items()}
@@ -550,6 +1084,7 @@ def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
         lines: list = []
         ok = True
         consumed: set = set()
+        raster_by_idx: dict = {}
         if gframes:
             for idx in sorted(gframes, key=lambda v: (v is None, v or 0)):
                 gref = gframes[idx]
@@ -560,12 +1095,13 @@ def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
                         aref = ascan[alt_rel]
                 if aref is None:
                     lines.append(
-                        _fail_line(scen, n, "n/a", gref.stem, "actual缺帧(missing)")
-                    )
+                        _fail_line(scen, n, "n/a", gref.stem, "actual缺帧(missing)"))
                     ok = False
                     continue
                 consumed.add(aref.rel)
-                diff, reason = compare_pair(gref, aref)
+                diff, reason, araster = compare_pair(gref, aref)
+                if araster is not None:
+                    raster_by_idx[idx] = araster
                 if reason:
                     lines.append(
                         _fail_line(
@@ -574,8 +1110,7 @@ def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
                             "n/a" if diff is None else str(diff),
                             frame_label(aref),
                             reason,
-                        )
-                    )
+                        ))
                     ok = False
         # 无 golden 对应的 actual 帧 → unapproved-frame FAIL（契约 §2.4）
         for rel, ref in sorted(ascan.items()):
@@ -583,29 +1118,38 @@ def compare_dirs(golden_dir, actual_dir, scenario: str | None = None):
                 lines.append(
                     _fail_line(
                         scen, n, "n/a", frame_label(ref), "多余帧无golden(unapproved-frame)"
-                    )
-                )
+                    ))
                 ok = False
         for label, reason in issues_by_scen.get(scen, []):
             lines.append(_fail_line(scen, n, "n/a", label, reason))
             ok = False
+        # 语义断言（契约 §2.3/§4）：与像素比较并行；无 view 数据记 n/a
+        sem_fails = run_semantics(scen, records.get(scen, []), raster_by_idx)
+        sem = "n/a(无view)" if sem_fails is None else (
+            "ok" if not sem_fails else "FAIL(" + "; ".join(sem_fails[:4]) + ")")
+        if sem_fails:
+            ok = False
         if ok:
-            results.append(ScenResult(scen, True, [_pass_line(scen, n)]))
+            results.append(ScenResult(scen, True, [_pass_line(scen, n, sem)]))
         else:
+            if sem_fails:
+                lines.append(_fail_line(scen, n, "n/a", "-", "语义断言失败",
+                                        "FAIL(" + "; ".join(sem_fails[:4]) + ")"))
             results.append(ScenResult(scen, False, lines))
     return results
 
 
 # ---------------------------------------------------------------- 输出（契约 §2.3 stdout 格式）
 
-def _pass_line(scen: str, n: int) -> str:
-    return f"[PASS] {scen:<20} 帧数={n} 差异像素=0 语义=未实现(P2)"
+def _pass_line(scen: str, n: int, sem: str = "ok") -> str:
+    return f"[PASS] {scen:<20} 帧数={n} 差异像素=0 语义={sem}"
 
 
-def _fail_line(scen: str, n, diff: str, label: str, reason: str) -> str:
+def _fail_line(scen: str, n, diff: str, label: str, reason: str,
+               sem: str = "ok") -> str:
     return (
         f"[FAIL] {scen:<20} 帧数={n} 差异像素={diff} 帧={label} "
-        f"原因={reason} 语义=未实现(P2)"
+        f"原因={reason} 语义={sem}"
     )
 
 
