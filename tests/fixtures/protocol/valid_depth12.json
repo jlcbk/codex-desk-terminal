@@ -1,0 +1,48 @@
+{
+  "_fixture_note": "P1.5 (A5)：F15 深度恰为 12 的合法包（F12 非法侧 13 的边界对）。深度算法与 scripts/check_protocol.py json_depth 一致：根对象计 1，容器（object/array）每层 +1，标量计 0。本包基体取 F01 最小合法包（深度 3），未知附加字段 vendor_depth_probe 为 11 层嵌套数组（叶为标量 1，计 11），合计 1+11=12 ≤ 12，全部检查层放行。additionalProperties:true 使 schema 前向兼容放行未知字段；未知字段计入深度与整包字节限制（INTERFACES §3 完整消息行、§3 末段）。",
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "valid-015",
+  "seq": 0,
+  "generated_at_ms": 1789002000000,
+  "source": {
+    "kind": "mock",
+    "connected": true,
+    "stale": false,
+    "last_event_at_ms": 1789002000000
+  },
+  "selected_thread_id": null,
+  "threads_total": 0,
+  "threads_truncated": false,
+  "threads": [],
+  "usage": {
+    "available": false,
+    "updated_at_ms": null,
+    "windows_total": 0,
+    "windows_truncated": false,
+    "windows": []
+  },
+  "vendor_depth_probe": [
+    [
+      [
+        [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        1
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  ]
+}
