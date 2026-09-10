@@ -34,7 +34,7 @@
 | P3.2 | A1（子代理） | done | P3.1（done） | （本次提交） | `pytest tests/bridge -q`（A0 复跑全量 89 passed exit 0，含取消消歧 deselect 的门禁项）；live user-input 17 快照/cancel 9 快照语义抽查吻合 §3 | bridge/sources/codex.py、tests/bridge/（+15 测试）、artifacts/codex/p32-*（6 组脱敏自检过） | A0 裁决：①transports/ 入纯度排除（IO 层）；②老化采纳提案 C（重连重建 StateEngine=新 epoch 全量替换，零契约变化），实现归下一 A1 波次，A/B 备案；③plan live 未触发=诚实否定证据，CLI 升级时重测；④item/plan/delta 形态缺口挂契约观察项 |
 | P3.3（loopback） | A4-W（子代理×2：中断+续作） | done | P0.5+P1.4（done） | （本次提交） | `pytest tests/transport/wss -q`（A0 复跑 54 passed exit 0）；loopback 自验 7/7（A0 复跑 all_passed=True exit 0） | bridge/transports/wss/、tests/transport/wss/、config/examples/、scripts/gen_dev_certs.sh、artifacts/transport/wss/ | 续作修复 2 真缺陷（__init__ 导出缺口、1009 计数失效）；W2/W5 真机项清单内嵌；板 1301 已确认 USB 枚举（/dev/cu.usbmodem1301，Espressif 0x303a） |
 | P3.4（host 阶段） | A4-B（子代理×2：中断+续作） | done | P0.5+P1.4（done） | （本次提交） | `sh scripts/build_transport_tests.sh`（A0 复跑 97 PASS+CRC 4/4+门禁 exit 0）；`run_loopback.py`（A0 复跑全过，18/18，cmp 4 组逐字节一致） | shared/transport/{crc32,fragmenter,reassembler}、bridge/transports/ble/、tests/transport/ble/、scripts/build_transport_tests.sh、artifacts/transport/ble/ | 五项契约偏差处置合理（异 id 中途片=CONTEXT_MISMATCH、超时语义差记录不改、ACK 超时常量归适配器层、按名发现→B2 改 UUID 过滤、证据目录参数化）；B0-B5 真机取证清单内嵌 |
-| P3.5 | - | todo | P3.3–P3.4 | - | - | - | 双 transport 齐后派 |
+| P3.5 | A4+A5（子代理） | doing | P3.3+P3.4（done） | - | - | tests/transport/integration/（进行中） | 真机项后置 |
 
 ## P5：低功耗和低压保护（逻辑部分先行）
 
