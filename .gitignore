@@ -6,6 +6,10 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# 第三方锁定依赖（由 scripts/ 下脚本按 VERSIONS.md 的 tag/sha256 拉取，不入库）
+vendor/
+third_party/
+
 # 凭证与本地配置（凭证不进 State、fixtures 或日志）
 *.pem
 *.key

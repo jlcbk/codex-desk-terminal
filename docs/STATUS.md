@@ -20,7 +20,7 @@
 |---|---|---|---|---|---|---|---|
 | P1.1 | A1 | todo | P0.4 | - | - | - | - |
 | P1.2 | A1 | todo | P1.1 | - | - | - | - |
-| P1.3 | A2 | todo | P0.1 | - | - | - | - |
+| P1.3 | A2（子代理） | doing | P0.1（done） | - | scripts/build_simulator.sh；simulator/smoke_offscreen.sh | artifacts/sim/（进行中） | 与 P0.2/P0.4 写入路径零冲突 |
 | P1.4 | A0 | todo | P0.4 | - | - | - | - |
 | P1.5 | A5 | todo | P0.4 | - | - | - | - |
 
