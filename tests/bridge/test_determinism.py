@@ -44,12 +44,20 @@ def test_clock_sequence_drives_output():
 
 
 def test_no_wall_clock_or_random_in_pure_modules():
-    """红线自检：reducer/render/engine/events/sources 不允许墙钟/随机/环境。"""
+    """红线自检：纯快照管线模块不允许墙钟/随机/环境。
+
+    P3.1 注（A1）：bridge/sources/codex.py 与 bridge/codex_rpc.py 是 live IO
+    模块（app-server 子进程、超时与退避需要单调钟/抖动），不属于纯快照管线，
+    在此排除；其"事件→NormalizedEvent→快照"的确定性由
+    tests/bridge/test_codex_adapter.py 的 mapper 与序列测试覆盖，
+    engine 侧纯度仍由本测试与 bridge/state/ 全量扫描保证。
+    """
     banned = ("import time", "import datetime", "import random", "import uuid",
               "time.time", "time.monotonic", "datetime.now", "datetime.utcnow",
               "random.", "uuid.", "os.environ", "getenv")
+    excluded = {"__main__.py", "codex.py", "codex_rpc.py"}
     targets = [pathlib.Path("/Users/cui/Documents/Projects/codex-desk-terminal/bridge")]
-    files = [p for p in targets[0].rglob("*.py") if p.name != "__main__.py"]
+    files = [p for p in targets[0].rglob("*.py") if p.name not in excluded]
     assert files, "bridge package must exist"
     for path in files:
         text = path.read_text(encoding="utf-8")

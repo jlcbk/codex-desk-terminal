@@ -30,7 +30,7 @@
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| P3.1 | A1（子代理） | doing | P0.2+P1.1（done） | - | - | bridge/sources/codex.py（进行中） | P3.6 桌面端到端保持 blocked（P0.2 结论） |
+| P3.1 | A1（子代理） | done | P0.2+P1.1（done） | （本次提交） | `pytest tests/bridge -q`（A0 复跑 76 passed exit 0）；`scripts/codex_live_smoke.py`（A0 复跑 exit 0，13 快照）；**live 快照→C 端交叉验证 33/33 PASS**；脱敏扫描唯一命中为 desk-terminal 正则误报 | bridge/sources/codex.py、bridge/codex_rpc.py、bridge/redact.py、tests/bridge/test_codex_adapter.py、scripts/codex_live_smoke.py、artifacts/codex/ | A0 认可 test_determinism 排除 IO 模块（纯度扫描不应覆盖 adapter）；重连缺线程老化策略归 P3.2；requestUserInput/turn/plan/updated 待 P3.2 实证；P3.6 维持 blocked |
 | P3.2–P3.5 | - | todo | P3.1/P0.5 | - | - | - | 传输小样按 transport.md §7 |
 
 ## P5：低功耗和低压保护（逻辑部分先行）
