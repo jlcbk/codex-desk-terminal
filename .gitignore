@@ -1,0 +1,16 @@
+# 构建产物与临时证据
+artifacts/
+build/
+out/
+__pycache__/
+*.pyc
+.DS_Store
+
+# 凭证与本地配置（凭证不进 State、fixtures 或日志）
+*.pem
+*.key
+config/local/
+.env
+
+# 协议探针临时输出（脱敏后的样本才允许入库 docs/proto-samples/）
+/tmp-probe/
