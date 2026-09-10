@@ -367,7 +367,8 @@ def test_happy_path_mapping(validator, fake_server_path, tmp_path):
 
 def test_disconnect_reconnect_stale_semantics(validator, fake_server_path, tmp_path):
     """app-server 进程暴毙 → source_disconnected（stale，任务不转 idle）→
-    指数退避重启 → source_reconnected（connected 翻转）。"""
+    指数退避重启成功 → 重建 StateEngine（P3.2 裁决 C：新 epoch 全量替换，
+    旧线程消失）→ source_reconnected（connected 恢复）。"""
     crash_steps = happy_steps("th-crash", "turn-crash")[:3]  # thread/状态/turn 开始
     crash_steps.append({"kind": "crash", "delay": 0.25})
     adapter, replies = make_adapter(
@@ -393,18 +394,88 @@ def test_disconnect_reconnect_stale_semantics(validator, fake_server_path, tmp_p
         assert rec["state"] == "working"
         assert rec["end_reason"] is None
 
-    last_disc_seq = disconnected[-1]["seq"]
-    reconnected = next(s for s in snaps if s["seq"] > last_disc_seq)
+    # 重连快照是新 epoch 的 seq=1（seq 归零），只能按位置序定位，不能按 seq 比较。
+    last_disc_idx = max(i for i, s in enumerate(snaps) if not s["source"]["connected"])
+    reconnected = snaps[last_disc_idx + 1]
     assert reconnected["source"]["connected"] is True
     assert reconnected["source"]["stale"] is False
+    assert reconnected["bridge_epoch"] != disconnected[-1]["bridge_epoch"]
 
     last = snaps[-1]
-    old = next(t for t in last["threads"] if t["id"] == "th-crash")
-    new = next(t for t in last["threads"] if t["id"] == "th-after")
-    assert old["state"] == "working" and old["end_reason"] is None  # 不复活、不伪造
-    assert new["state"] == "done" and new["end_reason"] == "completed"
+    # 快照全量替换：旧线程 th-crash 随旧 engine 消失，只剩新会话线程（不复活展示）
+    assert [t["id"] for t in last["threads"]] == ["th-after"]
+    assert last["threads"][0]["state"] == "done"
+    assert last["threads"][0]["end_reason"] == "completed"
     assert not replies.exists()
     assert len(result.report["attempts"]) == 2
+
+
+def test_reconnect_rebuilds_engine_full_replacement(validator, fake_server_path, tmp_path):
+    """P3.2 老化裁决 C（重连后缺线程老化）：模拟"进程退出→重启成功"序列——
+
+    - 断连期间旧 engine 持续产 stale 快照，旧线程记录原样保留（不伪造终态）；
+    - 重连成功（initialize 通过）后首份快照：新 bridge_epoch 与旧不同、seq 从
+      1 重新开始、source.connected 恢复、线程集合=新会话集合（此刻为空，
+      旧线程全量替换消失，后续快照只出现新会话线程）；
+    - 报告 ledger 跨 epoch 合并；证据文件名带 epoch，seq 归零后不互相覆盖。"""
+    crash_steps = happy_steps("th-old", "turn-old")[:3]  # thread/状态/turn 开始
+    crash_steps.append({"kind": "crash", "delay": 0.25})
+    adapter, replies = make_adapter(
+        fake_server_path, tmp_path,
+        [phase("th-old", "turn-old", crash_steps),
+         phase("th-new", "turn-new", happy_steps("th-new", "turn-new"))],
+        backoff=(0.0,), epoch="codex-test-epoch")
+    result = adapter.run()
+
+    assert result.exit_code == 0, result.report
+    snaps = result.snapshots
+    for snap in snaps:
+        errors = list(validator.iter_errors(snap))
+        assert not errors, f"seq={snap['seq']}: {errors[0].message}"
+        assert_invariants(snap)
+
+    # 断连期间：旧 engine（旧 epoch）保持 stale，旧线程 working 原样保留
+    disc = [s for s in snaps if not s["source"]["connected"]]
+    assert disc, "process exit must produce stale snapshots on the old engine"
+    for snap in disc:
+        assert snap["source"]["stale"] is True
+        assert snap["bridge_epoch"] == "codex-test-epoch"
+        assert any(t["id"] == "th-old" and t["state"] == "working"
+                   for t in snap["threads"])
+
+    # 重连成功后的第一份快照：新 epoch、seq 归零重启、connected 恢复、无旧线程
+    last_disc_idx = max(i for i, s in enumerate(snaps) if not s["source"]["connected"])
+    new_snaps = snaps[last_disc_idx + 1:]
+    first_new = new_snaps[0]
+    assert first_new["bridge_epoch"] != "codex-test-epoch"
+    assert first_new["bridge_epoch"] == "codex-test-epoch-r1"  # 派生自基底、可读
+    assert first_new["seq"] == 1
+    assert first_new["source"]["connected"] is True
+    assert first_new["source"]["stale"] is False
+    assert first_new["threads"] == []   # 线程集合=新会话集合：旧线程自然消失
+
+    # 新 epoch 内：seq 连续从 1 重新开始；旧线程永不复现；线程只来自新会话
+    assert [s["seq"] for s in new_snaps] == list(range(1, len(new_snaps) + 1))
+    assert all(t["id"] != "th-old" for s in new_snaps for t in s["threads"])
+    assert {t["id"] for t in new_snaps[-1]["threads"]} == {"th-new"}
+    assert new_snaps[-1]["threads"][0]["state"] == "done"
+    assert new_snaps[-1]["threads"][0]["end_reason"] == "completed"
+
+    # 报告：最终 epoch=新 epoch；通知计数跨 epoch 合并（旧+新会话各一次
+    # thread/started）；审批台账保留
+    assert result.report["bridge_epoch"] == new_snaps[-1]["bridge_epoch"]
+    assert result.report["notifications_seen"]["thread/started"] == 2
+    assert len(result.report["attempts"]) == 2
+    assert not replies.exists()
+
+    # 证据落盘：seq 归零后文件名靠 epoch 前缀区分，不覆盖断连期 stale 快照
+    out = tmp_path / "artifacts"
+    paths = codex_mod.write_artifacts(str(out), result)
+    names = [os.path.basename(p) for p in paths if "snapshot_" in os.path.basename(p)]
+    assert len(names) == len(result.snapshots)
+    assert len(set(names)) == len(names)
+    assert any(n.startswith("snapshot_codex-test-epoch_") for n in names)
+    assert any(n.startswith("snapshot_codex-test-epoch-r1_") for n in names)
 
 
 def test_rate_limits_missing_degrades_then_recovers(fake_server_path, tmp_path):
@@ -905,7 +976,7 @@ def test_write_artifacts_redaction(validator, fake_server_path, tmp_path):
     names = sorted(p.name for p in out.iterdir())
     assert "report.json" in names
     assert "events_raw_redacted.jsonl" in names
-    assert "snapshot_0001.json" in names
+    assert "snapshot_codex-test-001_0001.json" in names  # 文件名含 bridge_epoch
     assert len([p for p in paths if "snapshot_" in os.path.basename(p)]) \
         == len(result.snapshots)
 

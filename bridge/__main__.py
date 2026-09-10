@@ -6,7 +6,7 @@
     python -m bridge --source codex --prompt "只回复 ok" --out DIR --live
     python -m bridge --source codex --prompt "只回复 ok"          # 无 --live 为 dry-run
 
---out 每份快照写一个 JSON 文件，文件名含递增序号（snapshot_<seq>.json）；
+--out 每份快照写一个 JSON 文件，文件名含递增序号（snapshot_<epoch>_<seq>.json（codex 源；mock/replay 仍为 snapshot_<seq>.json））；
 无 --out 时每行一份紧凑 JSON（JSONL）打到 stdout。
 退出码：0 成功，2 用法/输入错误；codex source 的其余退出码见
 bridge/sources/codex.py（0 completed / 3 failed / 4 interrupted / 5 超时 /

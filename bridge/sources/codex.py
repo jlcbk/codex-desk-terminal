@@ -44,9 +44,12 @@ P3.2 补充（映射收尾）：
   ToolRequestUserInputParams），其余审批族回退原键序；
 - ``task_label`` / ``run_label`` 只进运行报告（evidence 元数据），不影响协议快照。
 
-断连/重连：app-server 进程退出 → 指数退避重启（1/2/4/8/16/30s 上限，
-INTERFACES §6；+抖动）；重连后经 StateEngine 产生 source_disconnected /
-source_reconnected 语义事件（source.connected 翻转、stale 来回）。
+断连/重连（P3.2 老化裁决 C）：app-server 进程退出 → 指数退避重启（1/2/4/8/
+16/30s 上限，INTERFACES §6；+抖动）；断连期间旧 engine 持续产
+source_disconnected 的 stale 快照（线程记录不变、不伪造终态）；重连成功
+（initialize 通过）即重建 StateEngine 与映射记账（新 bridge_epoch、seq 归零、
+快照全量替换，旧线程记录自然消失；INTERFACES §3 允许 epoch 仅在重新握手中
+变化），随后 source_reconnected 恢复 source.connected。
 """
 
 from __future__ import annotations
@@ -71,7 +74,7 @@ from ..codex_rpc import (
     RpcTimeout,
 )
 from ..redact import scrub, scrub_text
-from ..state.engine import SOURCE_BRIDGE_OWNED, StateEngine
+from ..state.engine import MAX_EPOCH_BYTES, SOURCE_BRIDGE_OWNED, StateEngine
 
 # ---- initialize 参数（对齐 docs/proto-samples/requests/initialize.request.json）----
 CLIENT_INFO = {
@@ -538,6 +541,10 @@ class CodexAdapter:
         self.task_label = task_label
         self.run_label = run_label
         self.epoch = epoch
+        # P3.2 裁决 C：重连成功即重建 StateEngine（新 bridge_epoch、seq 归零）。
+        self._epoch_base = epoch          # 首个 epoch（重连派生 epoch 的基底）
+        self._engine_generation = 0       # 成功重连次数（0 = 尚未重连）
+        self._ever_connected = False      # 本次 run 是否已有会话通过 initialize
         self._rng = rng or random.Random()
         self.snapshots: list = []
         self.raw_log: list = []
@@ -545,6 +552,7 @@ class CodexAdapter:
         self.attempts: list = []
         self.engine: Optional[StateEngine] = None
         self.mapper: Optional[CodexEventMapper] = None
+        self._utc_anchor_ms = 0
         self._ran = False
 
     # ---- 时钟（live 用真实单调钟 + 固定锚点；engine 保持无墙钟约定）---------
@@ -571,6 +579,8 @@ class CodexAdapter:
         anchor = wall0 - self._mono_ms()
         if self.epoch is None:
             self.epoch = "codex-%d" % wall0
+        self._epoch_base = self.epoch
+        self._utc_anchor_ms = anchor
         self.engine = StateEngine(self.epoch, source_kind=SOURCE_BRIDGE_OWNED,
                                   utc_anchor_ms=anchor)
         self.mapper = CodexEventMapper()
@@ -632,6 +642,30 @@ class CodexAdapter:
             shutil.rmtree(tmpdir, ignore_errors=True)
         return attempt
 
+    # ---- 重连重建（P3.2 老化裁决 C）-----------------------------------------
+    def _rebuild_for_reconnect(self) -> None:
+        """app-server 重连成功（initialize 通过）即重建 StateEngine。
+
+        新 bridge_epoch（基底 + ``-r<N>`` 派生，钳制在 INTERFACES §3 的 64 字节
+        内且与旧值必然不同）、seq 归零；快照全量替换语义下旧线程记录随旧 engine
+        实例自然消失（设备端在重新握手中接受 epoch 变化，P3.5 R1/R2 已验证）。
+        死进程的映射记账（未决审批、稀疏额度合并）一并按新会话重建；报告侧的
+        通知计数与审批台账并入新 mapper，保持运行报告证据完整。
+        """
+        self._engine_generation += 1
+        suffix = "-r%d" % self._engine_generation
+        budget = MAX_EPOCH_BYTES - len(suffix.encode("utf-8"))
+        base = self._epoch_base.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+        self.epoch = base + suffix
+        old_mapper, self.mapper = self.mapper, CodexEventMapper()
+        if old_mapper is not None:
+            for meth, cnt in old_mapper.notifications_seen.items():
+                self.mapper.notifications_seen[meth] = \
+                    self.mapper.notifications_seen.get(meth, 0) + cnt
+            self.mapper.server_requests_seen.extend(old_mapper.server_requests_seen)
+        self.engine = StateEngine(self.epoch, source_kind=SOURCE_BRIDGE_OWNED,
+                                  utc_anchor_ms=self._utc_anchor_ms)
+
     def _session_inner(self, client: AppServerClient, tmpdir: str, attempt: _Attempt) -> None:
         caps = self.capabilities
         try:
@@ -666,7 +700,12 @@ class CodexAdapter:
             attempt.error = "thread/start missing from frozen 0.152.0 method list"
             return
 
-        # （重）连成功：source_reconnected → 快照体现 connected 翻转 / stale 清除。
+        # （重）连成功：重连（此前已有会话通过 initialize）先重建 StateEngine
+        # （P3.2 裁决 C：新 bridge_epoch、seq 归零，旧线程记录全量替换消失），
+        # 再 source_reconnected → 新 epoch 首份快照体现 connected 恢复 / stale 清除。
+        if self._ever_connected:
+            self._rebuild_for_reconnect()
+        self._ever_connected = True
         self._apply([ev.source_reconnected()],
                     {"dir": "bridge", "note": "connected"})
 
@@ -872,12 +911,26 @@ class CodexAdapter:
 
 # ---- CLI / 工件 ------------------------------------------------------------
 
+def _epoch_fs_token(epoch: str) -> str:
+    """bridge_epoch → 文件名安全片段（证据快照文件名用）。
+
+    重连重建后 seq 归零（P3.2 裁决 C），快照文件名必须携带 epoch 才能避免
+    跨 epoch 相互覆盖；仅保留文件系统安全字符并截尾，尾部保留 ``-r<N>`` 派生后缀。
+    """
+    token = re.sub(r"[^A-Za-z0-9._-]", "_", epoch)
+    return token[-48:]
+
+
 def write_artifacts(out_dir: str, result: CodexRunResult) -> list:
-    """快照 JSONL、脱敏原始日志、运行报告写进 out_dir；返回文件路径列表。"""
+    """快照 JSONL、脱敏原始日志、运行报告写进 out_dir；返回文件路径列表。
+
+    快照文件名含 bridge_epoch + seq（重连 seq 归零后避免跨 epoch 覆盖证据）。
+    """
     os.makedirs(out_dir, exist_ok=True)
     paths = []
     for snap in result.snapshots:
-        path = os.path.join(out_dir, "snapshot_%04d.json" % snap["seq"])
+        path = os.path.join(out_dir, "snapshot_%s_%04d.json"
+                            % (_epoch_fs_token(snap["bridge_epoch"]), snap["seq"]))
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(snap, ensure_ascii=False, separators=(",", ":")) + "\n")
         paths.append(path)
