@@ -23,12 +23,12 @@
 | codex CLI（协议探针与 Bridge 上游） | 0.152.0 | `codex --version` = codex-cli 0.152.0；本机路径 /Users/cui/.local/lib/node-v24.19.0-darwin-arm64/bin/codex | 本机安装；app-server 协议由该版本 generate-json-schema 生成存档（见 docs/proto-samples/） |
 | Bridge Python | CPython 3.12.x | 经 uv 安装并固定（`uv python install 3.12` + 项目内 lock）；标准库优先，第三方包逐个审批入库 | python.org 经 uv 分发 |
 | 字体（CJK） | Noto Sans SC（SIL OFL 1.1） | 源：github.com/notofonts/noto-cjk（OFL 授权）；经 LVGL v9 官方 font converter 生成子集；子集字符表在 P2.1 冻结并记录可用范围 | 授权允许嵌入分发 |
+| ESP-IDF（固件构建） | 5.5.5 | tag `v5.5.5`（`ff1bac0aeecdd2b797b9c3a558c6bd03629bc013`） | 厂商 wiki 要求 ≥V5.5.0（docs/HARDWARE.md §6）；vendor 仓库自带 sdkconfig 由 5.4.3 生成（已记录冲突），P4.1 须用本锁定版重建官方最小例验证 |
 
 ## 待锁定（阻塞于并行任务结果）
 
 | 依赖 | 计划 | 阻塞于 |
 |---|---|---|
-| ESP-IDF | 选厂家官方示例兼容版本后锁 tag（候选 5.x LTS） | P0.3 审计厂商 demo 的 IDF 版本要求 |
 | BLE central（macOS） | 候选 Bleak（版本在 P0.5 锁定） | P0.5 |
 | Wi-Fi WSS server 库（Python） | 候选成熟 WebSocket 库（websockets 等，P0.5 锁定） | P0.5 |
 | JSON 解析库（C，共享/固件） | 候选收紧上限的流式解析器（P0.5/P1.4 评审后锁定） | P1.4 |

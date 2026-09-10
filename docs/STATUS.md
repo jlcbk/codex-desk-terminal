@@ -8,9 +8,9 @@
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| P0.1 | A0 | review | 无 | （本次提交） | `git log --oneline`；本表与 docs/VERSIONS.md 内容核对 | docs/VERSIONS.md | ESP-IDF 版本待 P0.3 结果回填（已标注） |
+| P0.1 | A0 | done | 无 | 2 次提交（基础仓库+版本清单） | `git log --oneline`；docs/VERSIONS.md 全条目带精确 tag/commit | docs/VERSIONS.md | 无 |
 | P0.2 | A1（子代理） | doing | 无 | - | `codex --version`；scripts/probe/ 下各脚本 | docs/CODEX_CAPABILITIES.md（进行中） | - |
-| P0.3 | A3（子代理） | doing | 无 | - | 见 docs/HARDWARE.md 证据列 | docs/HARDWARE.md（进行中） | - |
+| P0.3 | A3（子代理） | done | 无 | （本次提交） | docs/HARDWARE.md §8 复核命令（A0 抽查 6/6 通过） | docs/HARDWARE.md | 10 项 unverified 已列 §7；ESP-IDF 已锁 v5.5.5 回填 VERSIONS |
 | P0.4 | A0（子代理起草） | doing | P0.2 能力已知 | - | `uv run --with jsonschema python scripts/check_protocol.py` | protocol/、shared/state/、tests/fixtures/protocol/（起草中） | 冻结待 A0 审查 |
 | P0.5 | A4 | todo | P0.4 | - | - | - | - |
 
