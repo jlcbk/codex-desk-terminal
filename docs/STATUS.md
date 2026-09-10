@@ -47,6 +47,7 @@
 | P4.1a | A3（子代理） | done | P0.1/P0.3 | （已提交） | `idf.py --version`=5.5.5、vendor HEAD=eb1f634、03_ADC_Test 构建零编译警告（A0 三项复核实测吻合） | scripts/vendor_waveshare.sh、artifacts/idf/（13 件） | VERSIONS 已回填 IDF 双 ID（tag ff1bac0/commit b774170f，P4.1a 发现并经 A0 核实）；磁盘余 25Gi |
 | P4.1b | A3（子代理） | done | 板在位 | （备份不入库） | `shasum -a 256`（A0 独立复核 54afe421… 吻合）；独立复读头 4KB cmp 一致 | artifacts/board/backup-20260910-2328/（16MB 全量+README+恢复命令） | ESP32-S3 rev v0.2/N16R8 确认；恢复命令已记录未执行（按授权纪律） |
 | P4.1c | A3（子代理） | done | P4.1a+P4.1b | （产物不入库） | `idf.py flash` 3 次全 Hash verified；monitor 80s+30s；A0 抽查 boot.log 五项核验吻合（电压一手核实 4.131-4.143V） | artifacts/board/p41c-{boot,boot-2nd,flash1-3}.log、p41c-summary.md | **P4.1 收官**：无 boot loop、三烧不砖；PCB 修订仍需丝印目检（维持 unverified） |
+| P4.2 | A3（子代理） | done | P4.1+P1.4 | （已提交） | 串口侧：`idf.py build` 零警告、CRC 三循环稳定、板载 CRC32=zlib 锚点（A0 抽查日志吻合）；**用户目检 2026-09-11 确认五图案全部符合**（无花屏、方向正确、无残影） | firmware/{CMakeLists,sdkconfig.defaults,components/display_st7305,main}、artifacts/board/p42-* | SPI 10MHz 起步（24MHz 爬升留后）；无 busy/TE 兜底 20ms 延时；照片证据待用户补拍（可选） |
 
 ## P5：低功耗和低压保护（逻辑部分先行）
 
