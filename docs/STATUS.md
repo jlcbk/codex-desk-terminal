@@ -23,8 +23,8 @@
 |---|---|---|---|---|---|---|---|
 | P1.1 | A1 | todo | P0.4 | - | - | - | - |
 | P1.2 | A1 | todo | P1.1 | - | - | - | - |
-| P1.3 | A2（子代理） | doing | P0.1（done） | - | scripts/build_simulator.sh；simulator/smoke_offscreen.sh | artifacts/sim/（进行中） | 与 P0.2/P0.4 写入路径零冲突 |
-| P1.4 | A0 | todo | P0.4 | - | - | - | - |
+| P1.3 | A2（子代理） | done | P0.1（done） | （已提交） | `simulator/smoke_offscreen.sh`（A0 复跑 exit 0）；`scripts/build_simulator.sh` | simulator/、scripts/{vendor_lvgl,build_sdl2,build_simulator}.sh、artifacts/sim/ | LVGL sha256 `9c6f8230…`、SDL2 sha256 `560da2e5…`、cmake 3.31.6 待回填 VERSIONS；--scenario 参数与 ui_key 接线归 P2 |
+| P1.4 | A0 | done | P0.4（done） | （已提交） | `scripts/build_shared.sh`（36/36 PASS exit 0；ASan/UBSan 复验 36/36） | shared/{state,display,presenter} 新增 9 文件、tests/shared/ | 自研有界 JSON 解析器（零外部依赖）——VERSIONS「JSON 解析库」行按 in-house 收编；duration_mins≤65535 已在解析器执行（schema 同步见 P2 提交） |
 | P1.5 | A5 | todo | P0.4 | - | - | - | - |
 
 ## P2–P6
