@@ -1,0 +1,15 @@
+# transport_skeleton 独立工程 sdkconfig.defaults（仅编译级验证目标 esp32s3）
+# 板级对齐 firmware/sdkconfig.defaults（P4.1a 真机验证值）；BLE 骨架需 NimBLE。
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+
+# BLE GATT peripheral：NimBLE（选型理由见 ble_peripheral.h 文件头——
+# 相对 bluedroid 省内存、IDF 5.x 推荐宿主栈；transport.md §2.2 的
+# encrypted+MITM 权限标志在 NimBLE 为 BLE_GATT_CHR_F_*_AUTHEN/ENCRYPTED）。
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# 设备同一时刻只服务一个 Bridge central（transport.md §1：同一时刻一个活动 transport）
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1

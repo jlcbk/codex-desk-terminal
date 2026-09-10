@@ -1,0 +1,7 @@
+# Transport 组件外部依赖版本锁（A4，2026-09-10 实时核对 registry；
+# A0 回填 docs/VERSIONS.md）：
+#   espressif/esp_websocket_client 1.8.0（2026-07-22 发布，registry API：
+#   dependencies 仅 idf >=5.0 → 兼容本项目锁定的 IDF v5.5.5）。
+# 经 IDF component manager 拉取；不 git submodule、不复制源码。
+dependencies:
+  espressif/esp_websocket_client: "1.8.0"
