@@ -11,7 +11,7 @@
 | P0.1 | A0 | done | 无 | 2 次提交（基础仓库+版本清单） | `git log --oneline`；docs/VERSIONS.md 全条目带精确 tag/commit | docs/VERSIONS.md | 无 |
 | P0.2 | A1（子代理） | doing | 无 | - | `codex --version`；scripts/probe/ 下各脚本 | docs/CODEX_CAPABILITIES.md（进行中） | - |
 | P0.3 | A3（子代理） | done | 无 | （本次提交） | docs/HARDWARE.md §8 复核命令（A0 抽查 6/6 通过） | docs/HARDWARE.md | 10 项 unverified 已列 §7；ESP-IDF 已锁 v5.5.5 回填 VERSIONS |
-| P0.4 | A0（子代理起草） | doing | P0.2 能力已知 | - | `uv run --with jsonschema python scripts/check_protocol.py` | protocol/、shared/state/、tests/fixtures/protocol/（起草中） | 冻结待 A0 审查 |
+| P0.4 | A0（子代理起草+A0冻结） | done | P0.2 能力已知 | （本次提交） | `uv run --with jsonschema python scripts/check_protocol.py`（15/15 PASS 退出码 0）；`cc -std=c99 -pedantic -fsyntax-only shared/state/codex_state.h` | protocol/、shared/state/、tests/fixtures/protocol/、artifacts/protocol/P0.4-draft-check-report.txt | 10 项裁决已落实（INTERFACES §1a/§3）；深度12合法侧 fixture 归 P1.5 |
 | P0.5 | A4 | todo | P0.4 | - | - | - | - |
 
 ## P1：State、Mock 与模拟器基础

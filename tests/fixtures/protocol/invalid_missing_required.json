@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "invalid-002",
+  "generated_at_ms": 1789002000000,
+  "source": { "kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789002000000 },
+  "selected_thread_id": null,
+  "threads_total": 1,
+  "threads_truncated": false,
+  "threads": [
+    {
+      "id": "thread-x",
+      "turn_id": null,
+      "project": "demo",
+      "state": "idle",
+      "activity": "demo",
+      "updated_at_ms": 1789002000000,
+      "elapsed_ms": 0,
+      "waiting_ms": 0,
+      "end_reason": null,
+      "attention": null,
+      "plan": { "total": 0, "truncated": false, "steps": [] },
+      "context": { "used_tokens": null, "capacity_tokens": null, "used_percent": null }
+    }
+  ],
+  "usage": { "available": false, "updated_at_ms": null, "windows_total": 0, "windows_truncated": false, "windows": [] }
+}

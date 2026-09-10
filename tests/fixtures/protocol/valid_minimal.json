@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "mock-run-000",
+  "seq": 0,
+  "generated_at_ms": null,
+  "source": {
+    "kind": "mock",
+    "connected": false,
+    "stale": true,
+    "last_event_at_ms": null
+  },
+  "selected_thread_id": null,
+  "threads_total": 0,
+  "threads_truncated": false,
+  "threads": [],
+  "usage": {
+    "available": false,
+    "updated_at_ms": null,
+    "windows_total": 0,
+    "windows_truncated": false,
+    "windows": []
+  }
+}

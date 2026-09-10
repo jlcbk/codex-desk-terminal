@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "epoch-中文-混合123",
+  "seq": 42,
+  "generated_at_ms": 1789002000000,
+  "source": {
+    "kind": "codex_bridge_owned",
+    "connected": true,
+    "stale": false,
+    "last_event_at_ms": 1789001999000
+  },
+  "selected_thread_id": "线程-001",
+  "threads_total": 1,
+  "threads_truncated": false,
+  "threads": [
+    {
+      "id": "线程-001",
+      "turn_id": "回合-甲",
+      "project": "终端项目-中文名称",
+      "state": "working",
+      "activity": "正在重构状态机模块，请勿在电脑上执行相互冲突的命令，等待当前测试完成后继续",
+      "updated_at_ms": 1789002000000,
+      "elapsed_ms": 300000,
+      "waiting_ms": 0,
+      "end_reason": null,
+      "attention": { "pending_count": 0, "summary": "无等待审批事项" },
+      "plan": {
+        "total": 3,
+        "truncated": false,
+        "steps": [
+          { "text": "梳理模块边界", "status": "completed" },
+          { "text": "改写状态转移并补齐单元测试", "status": "in_progress" },
+          { "text": "回归全部页面截图", "status": "pending" }
+        ]
+      },
+      "context": { "used_tokens": 51200, "capacity_tokens": 272000, "used_percent": 18.8 }
+    }
+  ],
+  "usage": {
+    "available": true,
+    "updated_at_ms": 1789002000000,
+    "windows_total": 1,
+    "windows_truncated": false,
+    "windows": [
+      { "id": "窗口-5小时", "label": "五小时窗口", "used_percent": 66.6, "duration_mins": 300, "resets_at_ms": 1789012800000 }
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "mock-run-001",
+  "seq": 7,
+  "generated_at_ms": 1789002000000,
+  "source": {
+    "kind": "mock",
+    "connected": true,
+    "stale": false,
+    "last_event_at_ms": 1789002000000
+  },
+  "selected_thread_id": "thread-demo",
+  "threads_total": 1,
+  "threads_truncated": false,
+  "threads": [
+    {
+      "id": "thread-demo",
+      "turn_id": "turn-001",
+      "project": "codex-desk-terminal",
+      "state": "needs_you",
+      "activity": "请在电脑上处理权限请求",
+      "updated_at_ms": 1789002000000,
+      "elapsed_ms": 120000,
+      "waiting_ms": 5000,
+      "end_reason": null,
+      "attention": { "pending_count": 1, "summary": "运行命令需要批准" },
+      "plan": {
+        "total": 3,
+        "truncated": false,
+        "steps": [
+          { "text": "检查需求", "status": "completed" },
+          { "text": "实现界面", "status": "in_progress" },
+          { "text": "运行测试", "status": "pending" }
+        ]
+      },
+      "context": { "used_tokens": null, "capacity_tokens": null, "used_percent": null }
+    }
+  ],
+  "usage": {
+    "available": true,
+    "updated_at_ms": 1789002000000,
+    "windows_total": 1,
+    "windows_truncated": false,
+    "windows": [
+      { "id": "quota-example", "label": "SHORT WINDOW", "used_percent": 42.0, "duration_mins": 300, "resets_at_ms": 1789012800000 }
+    ]
+  }
+}

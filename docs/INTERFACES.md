@@ -1,6 +1,6 @@
-# 接口契约 v1 草案
+# 接口契约 v1（已冻结）
 
-状态：待 P0.4 冻结。此文件约束各 Agent 的共同实现；示例是项目协议，不是 Codex app-server 原始消息。P0 将本文件转为 JSON Schema 和 C 类型后，语义变化必须同步修改本文。所有具体大小均为首版预算，性能证据可支持调整。
+状态：**P0.4 已由 A0 于 2026-09-10 冻结**。冻结裁决补记见 §3 与 §1a；此后语义变化必须走主版本升级（§8）并同步修改本文、protocol/ schema 与 shared/state/ C 类型。此文件约束各 Agent 的共同实现；示例是项目协议，不是 Codex app-server 原始消息。所有具体大小均为首版预算，性能证据可支持调整。
 
 ## 1. 三种数据，单一业务快照
 
@@ -9,6 +9,10 @@
 3. `ViewModel`：Presenter 在本地合并上述两者，UI 唯一输入。模拟器通过独立测试接口注入 DeviceRuntime。
 
 不要在 AppState 混入假电压使其同时变成测试脚本和生产协议。统一 State JSON 指业务协议统一；两种 Transport 传输字节完全相同。可选上行 `DeviceTelemetry` 用独立类型，且不影响本地保护。
+
+### 1a. DeviceTelemetry v1（P0.4 冻结）
+
+可选上行（设备→Bridge），独立于 AppState，整包 ≤512 UTF-8 字节、深度 ≤12、合法 UTF-8；未知附加字段允许。字段：`schema_version`(=1)、`kind`(="telemetry")、`battery_mv`(整数 0–65535 或 null，2500–4500mV 有效性属设备本地校准不在协议层强制)、`battery_valid`(bool，false 时 battery_mv 必须 null)、`rssi_dbm`(整数 −128–0 或 null)、`transport`(枚举 ble/wifi/mock)、`sent_at_ms`(UTC Unix 毫秒或 null，设备无有效墙钟时 null)。语义边界：遥测绝不影响本地电池保护；生产构建禁用远端电池注入。真源 schema：protocol/telemetry.schema.json。
 
 ## 2. AppState 示例
 
@@ -74,17 +78,17 @@
 | 时间 | *_at_ms为UTC Unix毫秒或null；elapsed_ms/waiting_ms为非负持续时间；不用墙钟判断低压/重连 |
 | source.kind | mock / codex_bridge_owned / codex_desktop_observed；不可把受控会话标为桌面旁听 |
 | source.connected/stale | 上游状态，独立于设备无线连接；上游失联保持最后值并标陈旧 |
-| threads | 最多8项；每项id唯一；总数≥数组长度；截断有标记 |
-| 字符串 | id/turn_id≤128字节、project≤96、activity/attention.summary≤192、plan.text≤128、usage.label≤48；按UTF-8完整码点截断 |
+| threads | 最多8项；每项id唯一；总数≥数组长度；截断有标记。计数与总数类字段（threads_total、plan.total、windows_total、attention.pending_count）上限65535，与设备uint16存储对齐 |
+| 字符串 | id 类字段（thread id / turn_id / usage window id）统一≤128字节、project≤96、activity/attention.summary≤192、plan.text≤128、usage.label≤48；按UTF-8完整码点截断 |
 | state | idle / thinking / working / needs_you / done / error；未知枚举拒绝该快照，保留旧快照 |
 | plan | steps最多8项，total为原始总数，truncated说明裁剪；status统一pending/in_progress/completed |
-| context | 仅有可信来源才给值；缺值为null；累计token消耗不能直接映射当前context占用 |
-| usage | windows最多4项；窗口长度用正整数分钟；百分比0–100或null；缺额度available=false、windows=[] |
+| context | 仅有可信来源才给值；缺值为null；used_tokens/capacity_tokens为非负整数或null；used_percent为0–100或null（与usage窗口同规）；累计token消耗不能直接映射当前context占用 |
+| usage | windows最多4项；windows_total≥数组长度（同threads规则）；窗口长度用正整数分钟；百分比0–100或null（含context.used_percent）；缺额度available=false、windows=[] |
 | end_reason | null / completed / failed / cancelled；cancelled显示idle及取消说明 |
 | selected_thread_id | null或必须指向已包含线程；优先保留选中线程并占一个数组名额 |
 | 完整消息 | UTF-8 JSON≤16384字节，嵌套深度≤12；全部长度在分配内存前检查 |
 
-上述字段全部必填；允许为null的字段只有表中时间点、选中ID、turn_id、end_reason和数值未知项。attention允许null，plan不为null但可空数组。所有对象可忽略未知附加字段，但必须计入消息/深度限制；schema应采用相同前向兼容规则。类型错误、越界或缺必填字段拒绝整包，不能半应用。
+上述字段全部必填；允许为null的字段只有表中时间点、选中ID、turn_id、end_reason、数值未知项，以及attention（允许整包null）。plan不为null但可空数组。所有对象可忽略未知附加字段，但必须计入消息/深度限制；schema应采用相同前向兼容规则。类型错误、越界或缺必填字段拒绝整包，不能半应用。
 
 裁剪顺序：Bridge先按提醒优先级排序，保留选中线程；裁剪超长摘要/步骤/窗口后编码；仍超16KiB则逐步减少非选中低优先级线程，更新total/truncated。选中线程和NEEDS YOU优先；线程数超过上限时设备可见“还有N个”，v1不增加远程分页RPC。
 
@@ -191,8 +195,8 @@ Transport回调不调用LVGL。解析任务将最新已验证快照交给UI任�
 
 ## 9. P0 冻结清单
 
-- [ ] AppState/Telemetry schema与本文示例一致，所有长度/深度由两端执行。
-- [ ] 选定IDF、LVGL、SDL、Bridge依赖版本及官方板级示例commit。
+- [x] AppState/Telemetry schema与本文示例一致，所有长度/深度由两端执行。（P0.4 已冻结，2026-09-10；schema=protocol/*.schema.json，C 类型=shared/state/codex_state.h，fixtures=tests/fixtures/protocol/ 15/15）
+- [ ] 选定IDF、LVGL、SDL、Bridge依赖版本及官方板级示例commit。（IDF v5.5.5/LVGL v9.3.0/SDL2 2.30.12 已锁，Bridge 依赖待 P0.5）
 - [ ] 本机app-server能力矩阵与事件命名已核验；不可观察字段使用unknown。
 - [ ] BLE UUID、帧头、CRC测试向量、macOS配对流程确定。
 - [ ] Wi-Fi证书/设备token安全配置和开发loopback流程确定。

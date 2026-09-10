@@ -1,0 +1,50 @@
+{
+  "_fixture_note": "P0.4-draft: 未知附加字段被 schema 放行(additionalProperties:true)，预期由检查器深度检查拒绝。深度计数：根对象=1，本 probe 链达 13>12。",
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "invalid-009",
+  "seq": 1,
+  "generated_at_ms": 1789002000000,
+  "source": {
+    "kind": "mock",
+    "connected": true,
+    "stale": false,
+    "last_event_at_ms": 1789002000000
+  },
+  "selected_thread_id": null,
+  "threads_total": 0,
+  "threads_truncated": false,
+  "threads": [],
+  "usage": {
+    "available": false,
+    "updated_at_ms": null,
+    "windows_total": 0,
+    "windows_truncated": false,
+    "windows": []
+  },
+  "vendor_depth_probe": [
+    [
+      [
+        [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        [
+                          1
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ]
+    ]
+  ]
+}

@@ -1,0 +1,310 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-desk-terminal.local/protocol/state-v1.json",
+  "title": "Codex Desk Terminal AppState v1",
+  "description": "冻结状态：FROZEN v1（A0 于 2026-09-10 审查冻结；变更须走主版本升级流程，见 docs/INTERFACES.md §8）。本 schema 由 INTERFACES §2 示例与 §3 规则表生成。约定：（1）字符串契约上限按 UTF-8 字节计；JSON Schema 的 maxLength 按字符数计，只能作为近似上界（UTF-8 中字符数<=字节数），精确字节限制由两端解析器执行，见各字段的 cdt-utf8-max-bytes 自定义注解（值=字节上限）。（2）未知附加字段一律允许（additionalProperties: true，对应 §3 前向兼容规则），但必须计入整包 <=16384 UTF-8 字节与嵌套深度 <=12 的限制（§3 完整消息行），由解析器/检查器执行。（3）跨字段一致性无法用 JSON Schema 表达，由解析器执行：threads_total >= threads 数组长度；usage.windows_total >= windows 数组长度；thread id 唯一；selected_thread_id 为 null 或指向已包含线程；seq 同 bridge_epoch 严格递增（本 schema 拒绝 0..2^53-1 之外的值，重复/回退由 StateStore 依 §3 seq 行丢弃）。（4）时间点字段（*_at_ms）为 UTC Unix 毫秒整数或 null；elapsed_ms/waiting_ms 为非负整数持续时间。（5）未知主版本拒绝并显示协议不兼容；类型错误、越界或缺必填字段拒绝整包，不能半应用（§3 末段）。（6）计数与总数上限 65535（A0 冻结裁决：与设备侧 uint16 存储对齐，避免合法 JSON 不可存储）。（7）id 类字段（thread/turn/usage window）统一 <=128 字节（A0 冻结裁决）。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "kind",
+    "bridge_epoch",
+    "seq",
+    "generated_at_ms",
+    "source",
+    "selected_thread_id",
+    "threads_total",
+    "threads_truncated",
+    "threads",
+    "usage"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "§3 schema_version/kind 行：v1 仅接受整数 1；未知主版本拒绝并显示协议不兼容。"
+    },
+    "kind": {
+      "const": "state",
+      "description": "§3 schema_version/kind 行：v1 仅接受 state。"
+    },
+    "bridge_epoch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "cdt-utf8-max-bytes": 64,
+      "description": "§3 bridge_epoch 行：Bridge 每次启动生成新 ID，1-64 UTF-8 字节；仅在认证连接/重新握手中接受变化（握手规则由 Transport/Store 执行，不在本 schema 范围）。"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "§3 seq 行：同 epoch 严格递增安全整数，0 至 2^53-1；每次实际发送快照递增，包括存活快照。同 epoch <= 已应用值由 StateStore 丢弃（运行时语义，非格式错误）。"
+    },
+    "generated_at_ms": {
+      "type": ["integer", "null"],
+      "description": "§3 时间行：UTC Unix 毫秒或 null。"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["kind", "connected", "stale", "last_event_at_ms"],
+      "properties": {
+        "kind": {
+          "enum": ["mock", "codex_bridge_owned", "codex_desktop_observed"],
+          "description": "§3 source.kind 行：不可把受控会话标为桌面旁听（编码侧语义约束）。"
+        },
+        "connected": {
+          "type": "boolean",
+          "description": "§3 source.connected/stale 行：上游状态，独立于设备无线连接。"
+        },
+        "stale": {
+          "type": "boolean",
+          "description": "§3 source.connected/stale 行：上游失联保持最后值并标陈旧。"
+        },
+        "last_event_at_ms": {
+          "type": ["integer", "null"],
+          "description": "§3 时间行：UTC Unix 毫秒或 null。"
+        }
+      }
+    },
+    "selected_thread_id": {
+      "type": ["string", "null"],
+      "maxLength": 128,
+      "cdt-utf8-max-bytes": 128,
+      "description": "§3 selected_thread_id 行：null 或必须指向已包含线程（解析器一致性检查，本 schema 无法表达）；优先保留选中线程并占一个数组名额。"
+    },
+    "threads_total": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "§3 threads 行：总数 >= threads 数组长度（解析器检查）；可大于 8 表示有截断；上限 65535（A0 冻结：与设备 uint16 对齐）。"
+    },
+    "threads_truncated": {
+      "type": "boolean",
+      "description": "§3 threads 行：截断有标记。"
+    },
+    "threads": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "§3 threads 行：最多 8 项；每项 id 唯一（解析器检查）。",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "id",
+          "turn_id",
+          "project",
+          "state",
+          "activity",
+          "updated_at_ms",
+          "elapsed_ms",
+          "waiting_ms",
+          "end_reason",
+          "attention",
+          "plan",
+          "context"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128,
+            "cdt-utf8-max-bytes": 128,
+            "description": "§3 字符串行：id <= 128 字节；线程数组内唯一（解析器检查）。"
+          },
+          "turn_id": {
+            "type": ["string", "null"],
+            "maxLength": 128,
+            "cdt-utf8-max-bytes": 128,
+            "description": "§3 字符串行：turn_id <= 128 字节；§3 末段：允许 null。"
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 96,
+            "cdt-utf8-max-bytes": 96,
+            "description": "§3 字符串行：project <= 96 字节（允许中文）。"
+          },
+          "state": {
+            "enum": ["idle", "thinking", "working", "needs_you", "done", "error"],
+            "description": "§3 state 行：六状态枚举；未知枚举拒绝该快照，保留旧快照。"
+          },
+          "activity": {
+            "type": "string",
+            "maxLength": 192,
+            "cdt-utf8-max-bytes": 192,
+            "description": "§3 字符串行：activity <= 192 字节（允许中文）。"
+          },
+          "updated_at_ms": {
+            "type": ["integer", "null"],
+            "description": "§3 时间行：UTC Unix 毫秒或 null。"
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§3 时间行：非负持续时间；§3 末段：不允许 null（仅时间点/选中ID/turn_id/end_reason/数值未知项可 null）。"
+          },
+          "waiting_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§3 时间行：非负持续时间；不允许 null。"
+          },
+          "end_reason": {
+            "enum": [null, "completed", "failed", "cancelled"],
+            "description": "§3 end_reason 行：null / completed / failed / cancelled；cancelled 显示 idle 及取消说明（展示语义）。"
+          },
+          "attention": {
+            "description": "§3 末段：attention 允许 null；对象形态时两字段必填。",
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["pending_count", "summary"],
+                "properties": {
+                  "pending_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535,
+                    "description": "§3 reducer：同线程多个 pending 保留计数；上限 65535（A0 冻结：与设备 uint16 对齐）；本地静音不删除 pending。"
+                  },
+                  "summary": {
+                    "type": "string",
+                    "maxLength": 192,
+                    "cdt-utf8-max-bytes": 192,
+                    "description": "§3 字符串行：attention.summary <= 192 字节。"
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["total", "truncated", "steps"],
+            "description": "§3 末段：plan 不为 null，但 steps 可为空数组。",
+            "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535,
+              "description": "§3 plan 行：total 为原始总数（可大于 8，表示有截断）；上限 65535（A0 冻结）。"
+            },
+              "truncated": {
+                "type": "boolean",
+                "description": "§3 plan 行：truncated 说明裁剪。"
+              },
+              "steps": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "§3 plan 行：steps 最多 8 项。",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "required": ["text", "status"],
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "cdt-utf8-max-bytes": 128,
+                      "description": "§3 字符串行：plan.text <= 128 字节。"
+                    },
+                    "status": {
+                      "enum": ["pending", "in_progress", "completed"],
+                      "description": "§3 plan 行：status 统一 pending/in_progress/completed。"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["used_tokens", "capacity_tokens", "used_percent"],
+            "description": "§3 context 行：仅有可信来源才给值；缺值为 null；累计 token 消耗不能直接映射当前 context 占用（展示语义）。",
+            "properties": {
+              "used_tokens": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "A0 冻结确认：非负整数（token 计数）或 null。"
+              },
+              "capacity_tokens": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "A0 冻结确认：非负整数（token 计数）或 null。"
+              },
+              "used_percent": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 100,
+                "description": "§3 usage 行：百分比 0-100 或 null（A0 冻结确认同样适用于 context.used_percent）。"
+              }
+            }
+          }
+        }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["available", "updated_at_ms", "windows_total", "windows_truncated", "windows"],
+      "properties": {
+        "available": {
+          "type": "boolean",
+          "description": "§3 usage 行：缺额度 available=false、windows=[]。"
+        },
+        "updated_at_ms": {
+          "type": ["integer", "null"],
+          "description": "§3 时间行：UTC Unix 毫秒或 null。"
+        },
+        "windows_total": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "§3 usage 行：windows_total >= windows 数组长度（解析器检查，A0 冻结确认与 threads 同规则）；可大于 4 表示有截断；上限 65535。"
+        },
+        "windows_truncated": {
+          "type": "boolean"
+        },
+        "windows": {
+          "type": "array",
+          "maxItems": 4,
+          "description": "§3 usage 行：windows 最多 4 项。",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "label", "used_percent", "duration_mins", "resets_at_ms"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "maxLength": 128,
+                "cdt-utf8-max-bytes": 128,
+                "description": "A0 冻结：id 类字段（thread/turn/window）统一 <=128 字节。"
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 48,
+                "cdt-utf8-max-bytes": 48,
+                "description": "§3 字符串行：usage.label <= 48 字节。"
+              },
+              "used_percent": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 100,
+                "description": "§3 usage 行：百分比 0-100 或 null。"
+              },
+              "duration_mins": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "§3 usage 行：窗口长度用正整数分钟。"
+              },
+              "resets_at_ms": {
+                "type": ["integer", "null"],
+                "description": "§3 时间行：UTC Unix 毫秒或 null。"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

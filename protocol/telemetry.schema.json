@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-desk-terminal.local/protocol/telemetry-v1.json",
+  "title": "Codex Desk Terminal DeviceTelemetry v1",
+  "description": "冻结状态：FROZEN v1（A0 于 2026-09-10 冻结；字段见 docs/INTERFACES.md §1a）。可选上行遥测，独立于 AppState；语义边界：遥测绝不影响设备本地电池保护（§1）；battery 无效时 battery_mv=null 且 battery_valid=false（§4 对齐）；生产构建禁用远端电池注入（§8）。整包 <=512 UTF-8 字节、嵌套深度 <=12、合法 UTF-8（对齐 §3 完整消息行的收紧版预算，由两端解析器执行）；未知附加字段允许（前向兼容同 §3）。新增可选字段允许旧端忽略；删除/改义/改类型须主版本升级。",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "kind",
+    "battery_mv",
+    "battery_valid",
+    "rssi_dbm",
+    "transport",
+    "sent_at_ms"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "与 AppState 相同的主版本策略（§3 schema_version/kind 行），仅接受整数 1。"
+    },
+    "kind": {
+      "const": "telemetry",
+      "description": "独立于 state 的上行类型标识（§1：DeviceTelemetry 用独立类型）。"
+    },
+    "battery_mv": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 65535,
+      "description": "电池毫伏读数；采样无效时为 null。2500-4500mV 有效性判定属设备本地校准（§7.1），协议层不强制。"
+    },
+    "battery_valid": {
+      "type": "boolean",
+      "description": "本次采样是否有效；false 时 battery_mv 必须为 null。"
+    },
+    "rssi_dbm": {
+      "type": ["integer", "null"],
+      "minimum": -128,
+      "maximum": 0,
+      "description": "无线信号强度 dBm（负值）；不可得时 null。A0 冻结范围。"
+    },
+    "transport": {
+      "type": "string",
+      "enum": ["ble", "wifi", "mock"],
+      "description": "发送所用传输标识；A0 冻结枚举，<=16 字节隐含满足。"
+    },
+    "sent_at_ms": {
+      "type": ["integer", "null"],
+      "description": "发送时刻 UTC Unix 毫秒；设备无有效墙钟（如深睡重启后未对时）时为 null（A0 冻结：允许 null）。"
+    }
+  }
+}

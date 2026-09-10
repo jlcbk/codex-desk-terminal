@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "state",
+  "bridge_epoch": "invalid-005",
+  "seq": 1,
+  "generated_at_ms": 1789002000000,
+  "source": { "kind": "mock", "connected": true, "stale": false, "last_event_at_ms": 1789002000000 },
+  "selected_thread_id": null,
+  "threads_total": 0,
+  "threads_truncated": false,
+  "threads": [],
+  "usage": {
+    "available": true,
+    "updated_at_ms": 1789002000000,
+    "windows_total": 1,
+    "windows_truncated": false,
+    "windows": [
+      { "id": "quota-x", "label": "WINDOW", "used_percent": 150, "duration_mins": 300, "resets_at_ms": 1789012800000 }
+    ]
+  }
+}
