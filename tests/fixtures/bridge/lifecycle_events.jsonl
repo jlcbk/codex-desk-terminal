@@ -1,0 +1,10 @@
+{"type":"thread_started","thread_id":"thread-demo","at_ms":0,"project":"codex-desk-terminal"}
+{"type":"turn_started","thread_id":"thread-demo","turn_id":"turn-001","at_ms":100,"summary":"重构状态同步"}
+{"type":"token_usage_updated","thread_id":"thread-demo","turn_id":"turn-001","at_ms":200,"used_tokens":154000,"capacity_tokens":258400}
+{"type":"plan_updated","thread_id":"thread-demo","turn_id":"turn-001","at_ms":300,"plan_steps":[["检查需求","completed"],["实现界面","in_progress"],["运行测试","pending"]]}
+{"type":"item_started","thread_id":"thread-demo","turn_id":"turn-001","item_id":"item-exec-1","at_ms":600,"item_kind":"commandExecution","summary":"pytest -q tests"}
+{"type":"approval_requested","thread_id":"thread-demo","turn_id":"turn-001","request_id":0,"at_ms":900,"summary":"运行命令需要批准"}
+{"type":"rate_limits_updated","at_ms":1200,"windows":[{"id":"codex-primary","label":"300 MIN WINDOW","used_percent":42.0,"duration_mins":300,"resets_at_ms":1789005601200},{"id":"codex-secondary","label":"10080 MIN WINDOW","used_percent":22.0,"duration_mins":10080,"resets_at_ms":1789088401200}]}
+{"type":"server_request_resolved","thread_id":"thread-demo","request_id":0,"at_ms":1500}
+{"type":"item_completed","thread_id":"thread-demo","turn_id":"turn-001","item_id":"item-exec-1","at_ms":1800,"item_kind":"commandExecution"}
+{"type":"turn_completed","thread_id":"thread-demo","turn_id":"turn-001","at_ms":2100,"status":"completed"}

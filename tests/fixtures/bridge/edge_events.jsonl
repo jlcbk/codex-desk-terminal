@@ -1,0 +1,6 @@
+{"type":"thread_started","thread_id":"thread-edge-1","at_ms":0,"project":"边界场景项目"}
+{"type":"turn_started","thread_id":"thread-edge-1","turn_id":"turn-edge","at_ms":100,"summary":"超长计划与窗口截断"}
+{"type":"plan_updated","thread_id":"thread-edge-1","turn_id":"turn-edge","at_ms":200,"plan_steps":[["步骤 01","completed"],["步骤 02","completed"],["步骤 03","in_progress"],["步骤 04","pending"],["步骤 05","pending"],["步骤 06","pending"],["步骤 07","pending"],["步骤 08","pending"],["步骤 09","pending"],["步骤 10","pending"],["步骤 11","pending"],["步骤 12","pending"]]}
+{"type":"select_thread","select_thread_id":"thread-edge-1","at_ms":250}
+{"type":"rate_limits_updated","at_ms":300,"windows":[{"id":"win-1","label":"窗口标签超长测试一二三四五六七八九十甲乙丙丁戊己","used_percent":0,"duration_mins":300,"resets_at_ms":1789005600000},{"id":"win-2","label":"窗口标签超长测试一二三四五六七八九十甲乙丙丁戊己","used_percent":25,"duration_mins":10080,"resets_at_ms":1789088400000},{"id":"win-3","label":"W3","used_percent":50,"duration_mins":60,"resets_at_ms":1789005600000},{"id":"win-4","label":"W4","used_percent":75,"duration_mins":1440,"resets_at_ms":1789005600000},{"id":"win-5","label":"W5","used_percent":80,"duration_mins":30,"resets_at_ms":1789005600000},{"id":"win-6","label":"W6","used_percent":90,"duration_mins":15,"resets_at_ms":1789005600000}]}
+{"type":"source_disconnected","at_ms":400}
