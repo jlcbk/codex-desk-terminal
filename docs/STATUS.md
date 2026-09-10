@@ -15,21 +15,26 @@
 | P0.5 | A4（子代理） | done | P0.4（done） | （本次提交） | `python3 scripts/gen_crc_vectors.py --verify`（A0 复跑退出码 0）；`cc -std=c99 -pedantic -fsyntax-only -I shared/transport shared/transport/cdt_frame.h` | protocol/transport.md、shared/transport/cdt_frame.h、scripts/gen_crc_vectors.py | KEY 配对确认/权限弹窗文案/MTU23 吞吐三项待 P3 小样实测（transport.md §7 已列判据） |
 
 **P0 Gate 结论（2026-09-10，A0）：通过。** 协议冻结（P0.4）、能力矩阵（P0.2）、硬件证据（P0.3）、传输冻结（P0.5）齐备；桌面实时源不可接已如实记录为真实集成阻塞（P3.6 blocked），不以 Mock 掩盖；P1/P2/P4/P5 照常推进。剩余待勾选项（队列/内存边界）随 P1.4/P2 落实。
-| P0.5 | A4 | todo | P0.4 | - | - | - | - |
 
 ## P1：State、Mock 与模拟器基础
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| P1.1 | A1 | todo | P0.4 | - | - | - | - |
-| P1.2 | A1 | todo | P1.1 | - | - | - | - |
+| P1.1 | A1（子代理） | doing | P0.4（done） | - | - | bridge/（进行中） | - |
+| P1.2 | A1（子代理） | doing | P1.1 | - | - | bridge/sources/（进行中） | - |
 | P1.3 | A2（子代理） | done | P0.1（done） | （已提交） | `simulator/smoke_offscreen.sh`（A0 复跑 exit 0）；`scripts/build_simulator.sh` | simulator/、scripts/{vendor_lvgl,build_sdl2,build_simulator}.sh、artifacts/sim/ | LVGL sha256 `9c6f8230…`、SDL2 sha256 `560da2e5…`、cmake 3.31.6 待回填 VERSIONS；--scenario 参数与 ui_key 接线归 P2 |
 | P1.4 | A0 | done | P0.4（done） | （已提交） | `scripts/build_shared.sh`（36/36 PASS exit 0；ASan/UBSan 复验 36/36） | shared/{state,display,presenter} 新增 9 文件、tests/shared/ | 自研有界 JSON 解析器（零外部依赖）——VERSIONS「JSON 解析库」行按 in-house 收编；duration_mins≤65535 已在解析器执行（schema 同步见 P2 提交） |
-| P1.5 | A5 | todo | P0.4 | - | - | - | - |
+| P1.5 | A5（子代理） | done | P0.4（done） | （本次提交） | `uv run --with jsonschema python scripts/check_protocol.py`（A0 复跑 16/16 PASS exit 0） | tests/SCENARIOS.md、tests/UI_CONTRACT.md、tests/fixtures/scenarios/、F15+MANIFEST | S01–S21：18 ready / 3 待 P1.2 mock（S04/S09/S21）；F16 编号由 A0 补记 |
 
-## P2–P6
+## P2：完整页面与自动回归（进行中）
 
-尚未开始；表格在进入对应阶段时展开。需求与验收见 docs/DEVELOPMENT_PLAN.md §5。
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| P2.1 | A2（子代理） | doing | P1.3+P1.4（done） | - | - | shared/ui/、shared/presenter/（进行中） | - |
+| P2.2–P2.5 | - | todo | P2.1 | - | - | - | 重启 ZCode 后派发（macOS 授权生效） |
+
+
+
 
 ## 环境事实备忘（影响排期）
 

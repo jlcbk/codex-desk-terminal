@@ -12,7 +12,7 @@
 /Users/cui/.local/bin/uv run --with jsonschema python scripts/check_protocol.py
 ```
 
-预期输出：15/15 PASS，退出码 0。`valid_*` 必须通过 schema 与全部解析器级检查；`invalid_*` 必须被列出的一层拒绝。
+预期输出：16/16 PASS，退出码 0（P1.5 起含 F15；此前为 15/15）。`valid_*` 必须通过 schema 与全部解析器级检查；`invalid_*` 必须被列出的一层拒绝。
 
 ## 检查层说明
 
@@ -45,6 +45,8 @@ JSON Schema 无法表达跨字段一致性与字节级限制（maxLength 按字�
 | F12 | invalid_nested_depth.json | 未知附加字段 vendor_depth_probe 嵌套数组达深度 13（根对象计 1）。additionalProperties:true 使 schema 前向兼容放行未知字段，此用例由检查器的深度检查拒绝而非 schema | reject | depth | §8「超大JSON/嵌套」；§3 完整消息行「嵌套深度≤12」与末段「未知附加字段必须计入限制」 |
 | F13 | invalid_oversize.json | 整包 17860B>16384B：以未知附加字段 vendor_padding（17200 个 A）构造，schema 对未知字段无长度限制故放行，由检查器整包字节检查拒绝 | reject | size | §8「超大JSON」；§3 完整消息行「UTF-8 JSON≤16384字节」 |
 | F14 | invalid_utf8.bin | 二进制 fixture：外形为 state JSON，含 0xFF 0xFE 与截断序列 0xC3 0x28 | reject | utf8 | §8「非法 UTF-8」；§3 字符串行「按UTF-8完整码点」 |
+| F15 | valid_depth12.json | 深度恰为 12 的合法包（基体=F01 最小合法包；未知附加字段 vendor_depth_probe 为 11 层嵌套数组，根计 1 故合计 12），与 F12（深度 13 非法）构成深度边界对 | accept | — | §8「超大JSON/嵌套」边界合法侧；§3 完整消息行「嵌套深度≤12」与「未知附加字段必须计入限制」（P1.5/A5 补齐，2026-09-10） |
+| F16 | invalid_end_reason.json | end_reason="paused" 不在 null/completed/failed/cancelled 枚举内 | reject | schema | §3 end_reason 行「null / completed / failed / cancelled」；C 端实测返回 ERR_UNKNOWN_ENUM（编号 A0 补记，2026-09-10） |
 
 ## 已知预算张力（记录给 A0，非契约矛盾）
 
@@ -53,5 +55,5 @@ JSON Schema 无法表达跨字段一致性与字节级限制（maxLength 按字�
 ## 覆盖缺口（P1.4/P1.5 接手）
 
 - seq 同 epoch 重复/回退（IGNORED_STALE_SEQ）需 StateStore 已应用 seq 上下文，fixture 级无法表达；由 P1.4 有界解析/store 测试覆盖（§3 seq 行、§7「收到已经应用的同epoch同seq全包应ACK但不再渲染」）。
-- telemetry.schema.json 为草案（INTERFACES §1 未定义字段），暂无 fixtures；A0 冻结后补充。
-- 深度恰为 12（合法）与 13（非法）的边界对：F12 只覆盖非法侧；合法侧深度 12 由 F04（深度 6）未覆盖，可在 P1.5 补 F15。
+- telemetry.schema.json ~~为草案~~ **已由 A0 于 P0.4 冻结（2026-09-10，见 INTERFACES §1a）**；telemetry 专项 fixtures（合法/transport 枚举/越界）待 P3.3/P3.4 传输小样时补充。
+- 深度恰为 12（合法）与 13（非法）的边界对：~~F12 只覆盖非法侧；合法侧深度 12 由 F04（深度 6）未覆盖，可在 P1.5 补 F15~~ 已由 P1.5 补齐（F15=valid_depth12.json，2026-09-10）。
