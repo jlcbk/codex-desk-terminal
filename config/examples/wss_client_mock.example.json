@@ -1,0 +1,11 @@
+{
+  "_comment": "Python mock 设备客户端配置模板（P3.3，A4-W）。复制到 config/local/wss_client_mock.json 并填入真实值。fail-closed（transport.md §5.5）：wss 必须同时配置 ca_file（预置自签 CA 验链）与 spki_sha256_hex（叶子证书 SPKI SHA-256 pinning，取自 scripts/gen_dev_certs.sh 输出的 server_spki_sha256.txt）。两者任一失败 = CONFIG_ERROR 终态不重试。",
+  "url": "wss://localhost:8765/v1/state",
+  "tls": {
+    "ca_file": "config/local/dev-certs/ca.pem",
+    "spki_sha256_hex": "REPLACE_WITH_SERVER_SPKI_SHA256_HEX"
+  },
+  "auth": {
+    "device_token_file": "config/local/device_token"
+  }
+}

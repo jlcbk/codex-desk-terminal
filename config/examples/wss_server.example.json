@@ -1,0 +1,16 @@
+{
+  "_comment": "Bridge WSS server 配置模板（P3.3，A4-W）。复制到 config/local/wss_server.json 并填入真实值；config/local/ 已被 .gitignore 覆盖，token/私钥不入 Git、不进日志。业务路径冻结为 /v1/state（protocol/transport.md §5.1）；生产配置必须提供 tls 且不允许 allow_insecure_loopback=true。",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "path": "/v1/state",
+  "max_clients": 1,
+  "keepalive_interval_s": 15.0,
+  "tls": {
+    "cert_file": "config/local/dev-certs/server.crt",
+    "key_file": "config/local/dev-certs/server.key"
+  },
+  "auth": {
+    "device_token_file": "config/local/device_token"
+  },
+  "allow_insecure_loopback": false
+}
