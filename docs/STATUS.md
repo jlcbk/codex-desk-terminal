@@ -26,6 +26,19 @@
 | P1.4 | A0 | done | P0.4（done） | （已提交） | `scripts/build_shared.sh`（36/36 PASS exit 0；ASan/UBSan 复验 36/36） | shared/{state,display,presenter} 新增 9 文件、tests/shared/ | 自研有界 JSON 解析器（零外部依赖）——VERSIONS「JSON 解析库」行按 in-house 收编；duration_mins≤65535 已在解析器执行（schema 同步见 P2 提交） |
 | P1.5 | A5（子代理） | done | P0.4（done） | （本次提交） | `uv run --with jsonschema python scripts/check_protocol.py`（A0 复跑 16/16 PASS exit 0） | tests/SCENARIOS.md、tests/UI_CONTRACT.md、tests/fixtures/scenarios/、F15+MANIFEST | S01–S21：18 ready / 3 待 P1.2 mock（S04/S09/S21）；F16 编号由 A0 补记 |
 
+## P3：真实 Codex 与双 Transport（进行中）
+
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| P3.1 | A1（子代理） | doing | P0.2+P1.1（done） | - | - | bridge/sources/codex.py（进行中） | P3.6 桌面端到端保持 blocked（P0.2 结论） |
+| P3.2–P3.5 | - | todo | P3.1/P0.5 | - | - | - | 传输小样按 transport.md §7 |
+
+## P5：低功耗和低压保护（逻辑部分先行）
+
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| P5.1 | A3（子代理） | doing | P1.4（done）；P4.4 仅逻辑参数（§7.2 初值可注入，硬件校准保持阻塞） | - | - | shared/power/（进行中） | 无线策略实测归 P5.2 |
+
 ## P2：完整页面与自动回归（进行中）
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
