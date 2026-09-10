@@ -36,11 +36,18 @@ echo "[4/5] 运行 Power FSM 用例（§7 边界/持续低压/反弹/缺测/故�
 "$OUT/test_power"
 
 echo "[5/5] Gate 预检：共享模块不得包含平台头"
-# P2.1(A2) 范围修订：shared/ui 是 LVGL 页面层，允许 include lvgl（本脚本仍不编译它）；
-# 平台泄漏检查继续覆盖 state/display/presenter——presenter 无 LVGL 依赖另由
-# scripts/build_presenter_tests.sh 独立断言。变更待 A0 审。
-if grep -rn "esp_|ESP_|SDL2/SDL|lvgl" shared/ --include='*.c' --include='*.h' --exclude-dir=ui; then
-    echo "FAIL: 共享模块发现平台头泄漏" >&2
+# A0 分层门禁裁决（2026-09-10）：
+#   portable 层（state/display/presenter/power）：禁 esp_/ESP_/SDL/lvgl（不得 include LVGL）；
+#   UI 层（shared/ui）：允许 lvgl（页面层职责），但仍禁 esp_/SDL（保持 PC 可编译）。
+# 注意必须用 grep -E——BRE 下 | 是字面量，检查会静默空转（曾发生两次，勿再犯）。
+# 只检查 #include 行（注释中提及平台名是合法的文档说明）。
+GATE_RE='#[[:space:]]*include[[:space:]]*[<"](esp_|ESP_|SDL|lvgl|freertos|FreeRTOS)'
+if grep -rEn "$GATE_RE" shared/state shared/display shared/presenter shared/power --include='*.c' --include='*.h'; then
+    echo "FAIL: portable 共享模块发现平台头/LVGL include 泄漏" >&2
+    exit 1
+fi
+if grep -rEn "$GATE_RE" shared/ui --include='*.c' --include='*.h' | grep -Ev 'include[[:space:]]*[<"]lvgl'; then
+    echo "FAIL: shared/ui 发现 ESP-IDF/SDL/FreeRTOS include 泄漏（仅 lvgl 允许）" >&2
     exit 1
 fi
 echo "build_shared: 全部通过"

@@ -1,0 +1,452 @@
+/*
+ * test_presenter.c — Presenter 纯转换主机端测试（P2.1，A2）
+ *
+ * 用法：test_presenter（无参数；全部用例内置，直接构造 C 结构，不读 JSON）
+ * 覆盖（P2.1 验收 + INTERFACES §4）：
+ *   - 优先级：battery critical/sleep_prep → LOW_BATTERY 强制页标记
+ *   - "--"：电压无效/无额度/无快照/无任务
+ *   - fresh/frozen 计时：source+link 均 fresh 才推进 elapsed/waiting，
+ *     link stale / disconnected / source.stale 冻结
+ *   - 时长格式 mm:ss / hh:mm:ss
+ *   - 六状态词与 needs_you/error 强调位；cancelled → IDLE+已取消
+ *   - 计划/额度摘要；长文按列预算截断（ASCII 与 CJK UTF-8 码点安全）
+ * 任何 FAIL 退出码 1。
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "cdt_presenter.h"
+
+static int failures = 0;
+static int passes = 0;
+
+static void check(int cond, const char *name, const char *detail)
+{
+    if (cond) {
+        passes++;
+        printf("[PASS] %s\n", name);
+    }
+    else {
+        failures++;
+        printf("[FAIL] %s — %s\n", name, detail ? detail : "");
+    }
+}
+
+/* ---------- 基准 AppState / Runtime ---------- */
+
+static void base_thread(cdt_thread_t *t)
+{
+    memset(t, 0, sizeof(*t));
+    snprintf(t->id, sizeof(t->id), "thread-1");
+    t->turn_id_present = true;
+    snprintf(t->turn_id, sizeof(t->turn_id), "turn-1");
+    snprintf(t->project, sizeof(t->project), "codex-desk-terminal");
+    t->state = CDT_THREAD_STATE_WORKING;
+    snprintf(t->activity, sizeof(t->activity), "editing main.c");
+    t->elapsed_ms = 120000;
+    t->waiting_ms = 5000;
+    t->end_reason = CDT_END_REASON_NULL;
+    t->plan.total = 3;
+    t->plan.truncated = false;
+    t->plan.step_count = 3;
+    snprintf(t->plan.steps[0].text, sizeof(t->plan.steps[0].text), "s0");
+    t->plan.steps[0].status = CDT_STEP_STATUS_COMPLETED;
+    snprintf(t->plan.steps[1].text, sizeof(t->plan.steps[1].text), "s1");
+    t->plan.steps[1].status = CDT_STEP_STATUS_IN_PROGRESS;
+    snprintf(t->plan.steps[2].text, sizeof(t->plan.steps[2].text), "s2");
+    t->plan.steps[2].status = CDT_STEP_STATUS_PENDING;
+}
+
+static cdt_app_state_t base_state(void)
+{
+    cdt_app_state_t s;
+    memset(&s, 0, sizeof(s));
+    snprintf(s.bridge_epoch, sizeof(s.bridge_epoch), "test-epoch");
+    s.seq = 1;
+    s.source.kind = CDT_SOURCE_MOCK;
+    s.source.connected = true;
+    s.source.stale = false;
+    s.selected_thread_id_present = true;
+    snprintf(s.selected_thread_id, sizeof(s.selected_thread_id), "thread-1");
+    s.threads_total = 1;
+    s.thread_count = 1;
+    base_thread(&s.threads[0]);
+    s.usage.available = true;
+    s.usage.windows_total = 1;
+    s.usage.window_count = 1;
+    snprintf(s.usage.windows[0].label, sizeof(s.usage.windows[0].label), "SHORT WINDOW");
+    s.usage.windows[0].used_percent_present = true;
+    s.usage.windows[0].used_percent = 42.5;
+    s.usage.windows[0].duration_mins = 300;
+    return s;
+}
+
+static cdt_runtime_t base_rt(void)
+{
+    cdt_runtime_t r;
+    memset(&r, 0, sizeof(r));
+    r.battery_valid = true;
+    r.battery_mv = 3900;
+    r.usable_percent = 50;
+    r.charging = CDT_PRESENCE_UNKNOWN;
+    r.external_power = CDT_PRESENCE_UNKNOWN;
+    r.power_state = CDT_POWER_ACTIVE;
+    snprintf(r.transport, sizeof(r.transport), "mock");
+    r.link_state = CDT_LINK_CONNECTED;
+    r.last_rx_monotonic_ms = 30000;
+    r.selected_page = CDT_PAGE_NOW;
+    return r;
+}
+
+/* UTF-8 合法性检查（截断不得产生断裂序列）*/
+static int valid_utf8(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        unsigned char b = *p;
+        size_t n, i;
+        if (b < 0x80u) { p++; continue; }
+        if ((b & 0xE0u) == 0xC0u) n = 2;
+        else if ((b & 0xF0u) == 0xE0u) n = 3;
+        else if ((b & 0xF8u) == 0xF0u) n = 4;
+        else return 0;
+        for (i = 1; i < n; i++) {
+            if ((p[i] & 0xC0u) != 0x80u) return 0;
+        }
+        p += n;
+    }
+    return 1;
+}
+
+/* 显示列估算（与 presenter 同规则的独立简化实现，测截断预算）*/
+static int display_cols(const char *s)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    int cols = 0;
+    while (*p) {
+        int n = 1;
+        if (*p >= 0xF0u) n = 4;
+        else if (*p >= 0xE0u) n = 3;
+        else if (*p >= 0xC0u) n = 2;
+        cols += (n >= 3) ? 2 : 1; /* 测试输入只有 ASCII 与 3 字节 CJK */
+        p += n;
+    }
+    return cols;
+}
+
+/* ---------- 用例 ---------- */
+
+static void test_priority_low_battery(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    r.power_state = CDT_POWER_CRITICAL;
+    cdt_present(&s, &r, 40000, &v);
+    check(v.page == CDT_PAGE_LOW_BATTERY && v.low_battery_forced,
+          "critical → LOW_BATTERY 强制页标记", "page/flag 不符");
+    check(strcmp(v.status_label, "LOW BATTERY") == 0 && v.status_emphasized,
+          "critical → 状态词 LOW BATTERY 且强调", v.status_label);
+    check(strcmp(v.voltage_text, "3.90V") == 0 && v.battery_valid,
+          "低压强制页仍保留基本字段（电压）", v.voltage_text);
+}
+
+static void test_priority_sleep_prep(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    r.power_state = CDT_POWER_SLEEP_PREP;
+    cdt_present(&s, &r, 40000, &v);
+    check(v.low_battery_forced && v.page == CDT_PAGE_LOW_BATTERY,
+          "sleep_prep → LOW_BATTERY 强制页标记", "page/flag 不符");
+
+    r.power_state = CDT_POWER_ACTIVE;
+    cdt_present(&s, &r, 40000, &v);
+    check(!v.low_battery_forced && v.page == CDT_PAGE_NOW,
+          "ACTIVE → 普通页 NOW，不强制", "page/flag 不符");
+}
+
+static void test_voltage(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    r.battery_mv = 3590; /* < 3600：0% */
+    r.usable_percent = 0;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.voltage_text, "3.59V") == 0 && v.usable_percent == 0,
+          "电压 3590mV → \"3.59V\"，可用 0%", v.voltage_text);
+
+    r.battery_mv = 4200;
+    r.usable_percent = 100;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.voltage_text, "4.20V") == 0 && v.usable_percent == 100,
+          "电压 4200mV → \"4.20V\"，可用 100%", v.voltage_text);
+
+    r.battery_valid = false;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.voltage_text, "--") == 0 && !v.battery_valid,
+          "电池无效 → 电压 \"--\"", v.voltage_text);
+}
+
+static void test_status_words(void)
+{
+    struct {
+        cdt_thread_state_t st;
+        const char *label;
+        int emph;
+    } cases[] = {
+        { CDT_THREAD_STATE_IDLE, "IDLE", 0 },
+        { CDT_THREAD_STATE_THINKING, "THINKING", 0 },
+        { CDT_THREAD_STATE_WORKING, "WORKING", 0 },
+        { CDT_THREAD_STATE_NEEDS_YOU, "NEEDS YOU", 1 },
+        { CDT_THREAD_STATE_DONE, "DONE", 0 },
+        { CDT_THREAD_STATE_ERROR, "ERROR", 1 },
+    };
+    size_t i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        cdt_app_state_t s = base_state();
+        cdt_runtime_t r = base_rt();
+        cdt_view_t v;
+        char name[64];
+        s.threads[0].state = cases[i].st;
+        cdt_present(&s, &r, 40000, &v);
+        snprintf(name, sizeof(name), "状态词 %s（emphasized=%d）",
+                 cases[i].label, cases[i].emph);
+        check(strcmp(v.status_label, cases[i].label) == 0 &&
+                  v.status_emphasized == cases[i].emph &&
+                  v.status == cases[i].st,
+              name, v.status_label);
+    }
+}
+
+static void test_cancelled(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    s.threads[0].state = CDT_THREAD_STATE_IDLE;
+    s.threads[0].end_reason = CDT_END_REASON_CANCELLED;
+    cdt_present(&s, &r, 40000, &v);
+    check(v.status == CDT_THREAD_STATE_IDLE && strcmp(v.status_label, "IDLE") == 0 && v.cancelled,
+          "cancelled → IDLE + 已取消标记", v.status_label);
+}
+
+static void test_no_tasks_and_no_state(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    s.thread_count = 0;
+    s.threads_total = 0;
+    s.selected_thread_id_present = false;
+    cdt_present(&s, &r, 40000, &v);
+    check(v.status == CDT_THREAD_STATE_IDLE && strcmp(v.status_label, "IDLE") == 0,
+          "无任务 → IDLE", v.status_label);
+    check(strcmp(v.project, "--") == 0 && strcmp(v.activity, "--") == 0 &&
+              strcmp(v.elapsed_text, "--") == 0,
+          "无任务 → 项目/活动/时长 \"--\"", v.project);
+
+    cdt_present(NULL, &r, 40000, &v);
+    check(strcmp(v.status_label, "--") == 0 && strcmp(v.project, "--") == 0 &&
+              strcmp(v.usage_text, "--") == 0 && strcmp(v.elapsed_text, "--") == 0,
+          "无快照 → 状态/项目/额度/时长 \"--\"", v.status_label);
+    check(strcmp(v.voltage_text, "3.90V") == 0,
+          "无快照时电压仍来自 runtime（有效→显示）", v.voltage_text);
+
+    r.battery_valid = false;
+    cdt_present(NULL, &r, 40000, &v);
+    check(strcmp(v.voltage_text, "--") == 0,
+          "无快照且电池无效 → 电压 \"--\"", v.voltage_text);
+}
+
+static void test_usage_and_plan(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.usage_text, "SHORT WINDOW 43%") == 0,
+          "额度摘要 label + 取整百分比", v.usage_text);
+    check(strcmp(v.plan_text, "PLAN 1/3") == 0 && v.plan_present,
+          "计划摘要 PLAN 1/3", v.plan_text);
+
+    s.usage.windows_total = 3;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.usage_text, "SHORT WINDOW 43% +2") == 0,
+          "多窗口 → 追加 +2", v.usage_text);
+
+    s.usage.available = false;
+    s.usage.window_count = 0;
+    s.usage.windows_total = 0;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.usage_text, "--") == 0, "无额度 → \"--\"", v.usage_text);
+
+    s.usage.available = true;
+    s.usage.window_count = 1;
+    s.usage.windows_total = 1;
+    s.usage.windows[0].used_percent_present = false;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.usage_text, "SHORT WINDOW --") == 0,
+          "percent null → \"--\"", v.usage_text);
+
+    s.threads[0].plan.total = 0;
+    s.threads[0].plan.step_count = 0;
+    cdt_present(&s, &r, 40000, &v);
+    check(!v.plan_present, "无计划 → plan_present=false（UI 隐藏行）", "");
+}
+
+static void test_fresh_timing(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    /* last_rx=30000, now=40000 → base 120000ms + 10000ms = 130000ms = 02:10 */
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.elapsed_text, "02:10") == 0 && !v.time_frozen,
+          "fresh：elapsed = base + (now-last_rx) → 02:10", v.elapsed_text);
+    check(strcmp(v.waiting_text, "00:15") == 0,
+          "fresh：waiting 同步推进 → 00:15", v.waiting_text);
+
+    /* link stale → 冻结在 base 值 */
+    r.link_state = CDT_LINK_STALE;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.elapsed_text, "02:00") == 0 && v.time_frozen && v.link_stale,
+          "link stale → elapsed 冻结 02:00，link_stale 提示位", v.elapsed_text);
+
+    /* link disconnected → 冻结 + disconnected 提示位（业务状态词不变） */
+    r.link_state = CDT_LINK_DISCONNECTED;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.elapsed_text, "02:00") == 0 && v.link_disconnected &&
+              strcmp(v.status_label, "WORKING") == 0,
+          "link disconnected → 冻结且业务状态词不被覆盖", v.elapsed_text);
+
+    /* 上游 source.stale → 冻结（即使 link connected） */
+    r.link_state = CDT_LINK_CONNECTED;
+    s.source.stale = true;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.elapsed_text, "02:00") == 0 && v.time_frozen && v.link_stale,
+          "source.stale → 冻结 + stale 提示位", v.elapsed_text);
+
+    /* now < last_rx（防御）：不产生巨大增量 */
+    s.source.stale = false;
+    cdt_present(&s, &r, 1000, &v);
+    check(strcmp(v.elapsed_text, "02:00") == 0,
+          "now<last_rx 防御 → 不回退不暴涨", v.elapsed_text);
+}
+
+static void test_duration_format(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    s.threads[0].elapsed_ms = 3661000; /* 1h01m01s */
+    s.threads[0].waiting_ms = 0;
+    cdt_present(&s, &r, 30000, &v); /* last_rx==now：无增量 */
+    check(strcmp(v.elapsed_text, "01:01:01") == 0,
+          "≥1h → hh:mm:ss", v.elapsed_text);
+    check(strcmp(v.waiting_text, "00:00") == 0, "0ms → 00:00", v.waiting_text);
+
+    s.threads[0].elapsed_ms = 59000; /* 59s → 00:59 */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.elapsed_text, "00:59") == 0, "<1min → 00:59", v.elapsed_text);
+}
+
+static void test_truncation(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    char long_ascii[CDT_MAX_ACTIVITY_BYTES + 1];
+    char long_cjk[CDT_MAX_ACTIVITY_BYTES + 1];
+    size_t i;
+
+    for (i = 0; i < CDT_MAX_ACTIVITY_BYTES; i++) long_ascii[i] = (char)('a' + (i % 26));
+    long_ascii[CDT_MAX_ACTIVITY_BYTES] = '\0';
+    strcpy(long_cjk, "");
+    for (i = 0; i < 64; i++) strcat(long_cjk, "\xE7\xA0\x81"); /* 码 ×64 = 192B */
+
+    s.threads[0].activity[0] = '\0';
+    strncat(s.threads[0].activity, long_ascii, sizeof(s.threads[0].activity) - 1);
+    cdt_present(&s, &r, 30000, &v);
+    check(strlen(v.activity) > 0 && strlen(v.activity) <= CDT_VIEW_ACTIVITY_BYTES - 1 &&
+              display_cols(v.activity) <= CDT_VIEW_ACTIVITY_MAX_COLS &&
+              strcmp(v.activity + strlen(v.activity) - 2, "..") == 0,
+          "ASCII 长文 → 按预算截断且以 .. 结尾", v.activity);
+
+    s.threads[0].activity[0] = '\0';
+    strncat(s.threads[0].activity, long_cjk, sizeof(s.threads[0].activity) - 1);
+    cdt_present(&s, &r, 30000, &v);
+    check(valid_utf8(v.activity) &&
+              display_cols(v.activity) <= CDT_VIEW_ACTIVITY_MAX_COLS &&
+              strcmp(v.activity + strlen(v.activity) - 2, "..") == 0,
+          "CJK 长文 → UTF-8 码点安全截断（不切断序列）", v.activity);
+
+    /* 项目名也按预算截断（标题栏给电压留位）*/
+    s.threads[0].activity[0] = '\0';
+    s.threads[0].project[0] = '\0';
+    strncat(s.threads[0].project, long_ascii, sizeof(s.threads[0].project) - 1);
+    cdt_present(&s, &r, 30000, &v);
+    check(display_cols(v.project) <= CDT_VIEW_PROJECT_MAX_COLS,
+          "超长项目名 → 标题栏预算截断", v.project);
+
+    /* 空活动 → "--" */
+    s.threads[0].project[0] = '\0';
+    s.threads[0].activity[0] = '\0';
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.project, "--") == 0 && strcmp(v.activity, "--") == 0,
+          "空 project/activity → \"--\"", v.activity);
+}
+
+static void test_attention_and_mute(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    s.threads[0].state = CDT_THREAD_STATE_NEEDS_YOU;
+    s.threads[0].attention_present = true;
+    s.threads[0].attention.pending_count = 2;
+    snprintf(s.threads[0].attention.summary, sizeof(s.threads[0].attention.summary),
+             "run command?");
+    cdt_present(&s, &r, 30000, &v);
+    check(v.attention_present && v.pending_count == 2 &&
+              strcmp(v.attention, "run command?") == 0,
+          "attention 摘要透传", v.attention);
+
+    s.threads[0].attention_present = false;
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.attention_present && v.pending_count == 0,
+          "attention null → 隐藏，计数 0", "");
+
+    r.muted_attention_present = true;
+    snprintf(r.muted_attention_id, sizeof(r.muted_attention_id), "thread-1");
+    cdt_present(&s, &r, 30000, &v);
+    check(v.muted, "runtime 静音位透传", "");
+}
+
+int main(void)
+{
+    test_priority_low_battery();
+    test_priority_sleep_prep();
+    test_voltage();
+    test_status_words();
+    test_cancelled();
+    test_no_tasks_and_no_state();
+    test_usage_and_plan();
+    test_fresh_timing();
+    test_duration_format();
+    test_truncation();
+    test_attention_and_mute();
+    printf("\n汇总: %d PASS, %d FAIL\n", passes, failures);
+    return failures == 0 ? 0 : 1;
+}

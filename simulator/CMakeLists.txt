@@ -37,6 +37,21 @@ find_package(SDL2 CONFIG REQUIRED)
 # LVGL 的 SDL 驱动源码（lv_sdl_window.c 等）需要能找到 <SDL2/SDL.h>
 target_include_directories(lvgl PRIVATE "${SDL2_PREFIX}/include")
 
-add_executable(codex-display-sim main.c)
+add_executable(codex-display-sim
+    main.c
+    # shared/ 源码相对路径引用（不复制）：state 解析、公共单色帧、presenter、共享 UI
+    "${SIM_PROJ_ROOT}/shared/state/cdt_json.c"
+    "${SIM_PROJ_ROOT}/shared/state/cdt_parser.c"
+    "${SIM_PROJ_ROOT}/shared/display/cdt_frame.c"
+    "${SIM_PROJ_ROOT}/shared/presenter/cdt_presenter.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_now.c"
+)
+target_include_directories(codex-display-sim PRIVATE
+    "${SIM_PROJ_ROOT}/shared/state"
+    "${SIM_PROJ_ROOT}/shared/display"
+    "${SIM_PROJ_ROOT}/shared/presenter"
+    "${SIM_PROJ_ROOT}/shared/ui"
+)
 target_link_libraries(codex-display-sim PRIVATE lvgl SDL2::SDL2-static)
 target_compile_options(codex-display-sim PRIVATE -Wall -Wextra)

@@ -66,9 +66,10 @@
 #define LV_USE_THEME_MONO 0
 #define LV_USE_THEME_SIMPLE 0
 
-#define LV_FONT_MONTSERRAT_14 1            /* 占位画面文本（内置字体） */
-#define LV_FONT_MONTSERRAT_16 0
+#define LV_FONT_MONTSERRAT_14 1            /* 底栏/提示条（P2.1） */
+#define LV_FONT_MONTSERRAT_16 1            /* 标题栏/正文（P2.1） */
 #define LV_FONT_MONTSERRAT_20 0
+#define LV_FONT_MONTSERRAT_28 1            /* 主状态词 28px（P2.1；§6 主状态 28-36px） */
 
 #define LV_USE_FLEX 1
 #define LV_USE_GRID 0

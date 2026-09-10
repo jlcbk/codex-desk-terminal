@@ -47,7 +47,7 @@
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| P2.1 | A2（子代理） | doing | P1.3+P1.4（done） | - | - | shared/ui/、shared/presenter/（进行中） | - |
+| P2.1 | A2（子代理） | done | P1.3+P1.4（done） | （本次提交） | `sh scripts/build_presenter_tests.sh`（A0 复跑 42 PASS exit 0）；`--state` 渲染+两次 cmp 确定性 OK（A0 复验）；目检 needs_you 帧六要素 | shared/presenter/{cdt_view,cdt_presenter}、shared/ui/、simulator/（--state/--capture-frame）、tests/shared/test_presenter.c、artifacts/ui/ 10 帧 | CJK 为 ? 占位归 P2.2（Noto Sans SC）；LOW BATTERY 完整页归 P2.3；A0 裁决：门禁改分层（portable 禁 lvgl、ui 允许 lvgl 禁 esp/SDL），并修复其丢掉 grep -E 的回归+注释误报，五路注入验证生效 |
 | P2.2–P2.5 | - | todo | P2.1 | - | - | - | 重启 ZCode 后派发（macOS 授权生效） |
 
 
