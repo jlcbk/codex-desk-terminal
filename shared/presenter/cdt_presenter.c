@@ -165,8 +165,8 @@ static void fmt_duration(char *dst, size_t dstsz, uint64_t ms)
     uint32_t m = (uint32_t)((total_s % 3600u) / 60u);
     uint32_t s = (uint32_t)(total_s % 60u);
 
-    if (h > 0) snprintf(dst, dstsz, "%02u:%02u:%02u", (unsigned)h, m, s);
-    else snprintf(dst, dstsz, "%02u:%02u", m, s);
+    if (h > 0) snprintf(dst, dstsz, "%02u:%02u:%02u", (unsigned)h, (unsigned)m, (unsigned)s);
+    else snprintf(dst, dstsz, "%02u:%02u", (unsigned)m, (unsigned)s);
 }
 
 static const char *status_label_of(cdt_thread_state_t st)

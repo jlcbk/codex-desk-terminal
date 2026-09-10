@@ -1,27 +1,38 @@
 /*
- * main.c — P4.2（A3）ST7305 真机测试图案循环。
+ * main.c — P4.3（A2+A3）LVGL + shared/ui 完整页面上真屏（板 1301）。
  *
- * 验收目标（docs/DEVELOPMENT_PLAN.md P4.2 行）：四角标记、棋盘、横竖线、
- * 文字方向正确，无花屏。屏幕图案循环持续运行，目检由用户执行；本程序
- * 串口侧打印每个图案帧名 + 整帧 CRC32（真源 shared/transport/cdt_crc32.c，
- * 与 zlib.crc32 逐位一致），同图案两次循环 CRC 相同即绘制确定性成立。
+ * 验收目标（docs/DEVELOPMENT_PLAN.md P4.3 行）：与单色 golden 内容一致；记录
+ * 照片及 frame hash。设备侧形式：**同输入帧 CRC 与模拟器完全一致**——
+ *   固件：内嵌场景 AppState（p43_scenes.h，与 golden 同源 fixture）+ 合成
+ *         DeviceRuntime（3900mV/connected/last_rx=0，与模拟器 synth_runtime 同值）
+ *         → cdt_present → cdt_ui_apply_nav → 整屏刷新（同步 flush 落面板）
+ *         → 对 cdt 逻辑帧（15000B，1=黑）算 cdt_crc32 并串口打印。
+ *   模拟器：同一 JSON 文本经 --state 路径 + --fixed-clock 渲染 --capture-frame，
+ *         Mac 侧对 BMP 重打包 15000B 后算 zlib.crc32（firmware/tools/p43_align.py）。
+ * 两端同 vendor/lvgl（commit c033a98）、同渲染面 lv_conf（见 components/cdt_lvgl/lv_conf.h）。
  *
- * 图案（每图案 4 秒，循环）：
- *   ① corners  四角 20x20 实心块 + 中心十字（臂长 ±20px）
- *   ② checker16 16px 棋盘格（25 x 18.75 块，左上块白）
- *   ③ lines30  横线 y=0,30..270 + 竖线 x=0,30..390（各 1px）
- *   ④ text4dir 内置 8x16 点阵 "CODEX" 按四方向绘制 + 1px 边框；正常横向居中
- *   ⑤ bwflash  全黑/全白各 1 秒交替，共 4 帧
+ * 页面每 6 秒自动切换循环；KEY（长按静音/导航）归 P4.5，本任务不实现。
+ * 不含网络/ADC/按键；电池为合成注入（生产构建禁远端电池注入的红线不变，
+ * 此处 3900mV 是演示 Runtime，与模拟器对齐路径一致）。
  */
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 
-#include "cdt_frame.h"
+#include "cdt_nav.h"
+#include "cdt_parser.h"
+#include "cdt_presenter.h"
+#include "cdt_ui.h"
+#include "cdt_view.h"
+#include "lvgl.h"
+#include "lvgl_port.h"
+#include "p43_scenes.h"
 #include "st7305.h"
 
 /*
@@ -29,230 +40,144 @@
  *   uint32_t cdt_crc32(const uint8_t *data, size_t len);
  * 该头与 shared/display/cdt_frame.h 同名且 include guard 相同（CDT_FRAME_H），
  * 同一翻译单元无法同时包含，故此处按冻结签名本地声明；实现链接
- * shared/transport/cdt_crc32.c（见 main/CMakeLists.txt）。
+ * shared/transport/cdt_crc32.c（见 main/CMakeLists.txt，P4.2 先例）。
  */
 uint32_t cdt_crc32(const uint8_t *data, size_t len);
 
-#define TAG "p42"
+#define TAG "p43"
 
-#define PATTERN_MS 4000
-#define FLASH_MS   1000
+#define SCENE_PERIOD_MS 6000
+#define UI_TASK_STACK_BYTES (24 * 1024)
+#define UI_TASK_PERIOD_MS 10
 
-/* ------------------------------------------------------------------ */
-/* 内置 8x16 点阵（手写最小集：C O D E X），行优先 16 行，MSB=最左列     */
-/* ------------------------------------------------------------------ */
-static const uint8_t k_font_c[16] = {
-    0x00, 0x00, 0x00, 0x3C, 0x66, 0x42, 0x40, 0x40,
-    0x40, 0x42, 0x66, 0x3C, 0x00, 0x00, 0x00, 0x00,
-};
-static const uint8_t k_font_o[16] = {
-    0x00, 0x00, 0x00, 0x3C, 0x66, 0x42, 0x42, 0x42,
-    0x42, 0x42, 0x66, 0x3C, 0x00, 0x00, 0x00, 0x00,
-};
-static const uint8_t k_font_d[16] = {
-    0x00, 0x00, 0x00, 0x7C, 0x46, 0x43, 0x43, 0x43,
-    0x43, 0x43, 0x46, 0x7C, 0x00, 0x00, 0x00, 0x00,
-};
-static const uint8_t k_font_e[16] = {
-    0x00, 0x00, 0x00, 0x7E, 0x40, 0x40, 0x40, 0x7C,
-    0x40, 0x40, 0x40, 0x7E, 0x00, 0x00, 0x00, 0x00,
-};
-static const uint8_t k_font_x[16] = {
-    0x00, 0x00, 0x00, 0x42, 0x42, 0x24, 0x18, 0x18,
-    0x18, 0x24, 0x42, 0x42, 0x00, 0x00, 0x00, 0x00,
-};
-
-static const uint8_t *font_glyph(char c)
-{
-    switch (c) {
-    case 'C': return k_font_c;
-    case 'O': return k_font_o;
-    case 'D': return k_font_d;
-    case 'E': return k_font_e;
-    case 'X': return k_font_x;
-    default:  return NULL;
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* 图案绘制（纯函数：同参数必产生同一帧 → CRC 可复现）                   */
-/* ------------------------------------------------------------------ */
-
-static void draw_rect(cdt_frame_t *f, int x0, int y0, int w, int h)
-{
-    for (int dy = 0; dy < h; dy++) {
-        for (int dx = 0; dx < w; dx++) {
-            cdt_frame_set(f, x0 + dx, y0 + dy, 1);
-        }
-    }
-}
-
-/* ① 四角 20x20 实心块 + 中心十字 */
-static void draw_corners(cdt_frame_t *f, int frame_idx)
-{
-    (void)frame_idx;
-    cdt_frame_clear(f, 0);
-    draw_rect(f, 0, 0, 20, 20);
-    draw_rect(f, CDT_FRAME_WIDTH - 20, 0, 20, 20);
-    draw_rect(f, 0, CDT_FRAME_HEIGHT - 20, 20, 20);
-    draw_rect(f, CDT_FRAME_WIDTH - 20, CDT_FRAME_HEIGHT - 20, 20, 20);
-    for (int i = -20; i <= 20; i++) {
-        cdt_frame_set(f, 200 + i, 150, 1); /* 横臂 41px */
-        cdt_frame_set(f, 200, 150 + i, 1); /* 竖臂 41px */
-    }
-}
-
-/* ② 16px 棋盘格：25 x 18.75 块，((x/16)+(y/16)) 偶 = 黑 */
-static void draw_checker16(cdt_frame_t *f, int frame_idx)
-{
-    (void)frame_idx;
-    cdt_frame_clear(f, 0);
-    for (int y = 0; y < CDT_FRAME_HEIGHT; y++) {
-        for (int x = 0; x < CDT_FRAME_WIDTH; x++) {
-            if (((x >> 4) + (y >> 4)) & 1) {
-                cdt_frame_set(f, x, y, 1);
-            }
-        }
-    }
-}
-
-/* ③ 横线 y=0,30,...,270（10 条）+ 竖线 x=0,30,...,390（14 条） */
-static void draw_lines30(cdt_frame_t *f, int frame_idx)
-{
-    (void)frame_idx;
-    cdt_frame_clear(f, 0);
-    for (int y = 0; y < CDT_FRAME_HEIGHT; y += 30) {
-        for (int x = 0; x < CDT_FRAME_WIDTH; x++) {
-            cdt_frame_set(f, x, y, 1);
-        }
-    }
-    for (int x = 0; x < CDT_FRAME_WIDTH; x += 30) {
-        for (int y = 0; y < CDT_FRAME_HEIGHT; y++) {
-            cdt_frame_set(f, x, y, 1);
-        }
-    }
-}
-
-/* "CODEX" 5 字符 x 8px = 40 宽、16 高；rot: 0/90/180/270（顺时针） */
-#define WORD_W 40
-#define WORD_H 16
-
-static void draw_text_rot(cdt_frame_t *f, const char *s, int x0, int y0, int rot)
-{
-    int wx = 0;
-    for (const char *p = s; *p != '\0'; p++, wx += 8) {
-        const uint8_t *g = font_glyph(*p);
-        if (g == NULL) {
-            continue;
-        }
-        for (int gy = 0; gy < WORD_H; gy++) {
-            uint8_t bits = g[gy];
-            for (int gx = 0; gx < 8; gx++) {
-                int dx, dy;
-                if (!((bits >> (7 - gx)) & 1)) {
-                    continue;
-                }
-                switch (rot) {
-                case 90:  /* 顺时针 90°：占 16 宽 x 40 高 */
-                    dx = x0 + (WORD_H - 1 - gy);
-                    dy = y0 + wx + gx;
-                    break;
-                case 180:
-                    dx = x0 + (WORD_W - 1 - (wx + gx));
-                    dy = y0 + (WORD_H - 1 - gy);
-                    break;
-                case 270: /* 逆时针 90°：占 16 宽 x 40 高 */
-                    dx = x0 + gy;
-                    dy = y0 + (WORD_W - 1 - (wx + gx));
-                    break;
-                default: /* 0 = 正常横向阅读方向 */
-                    dx = x0 + wx + gx;
-                    dy = y0 + gy;
-                    break;
-                }
-                cdt_frame_set(f, dx, dy, 1);
-            }
-        }
-    }
-}
-
-/* ④ 文字方向：四方向各一条 + 居中正常横向 + 1px 边框 */
-static void draw_text4dir(cdt_frame_t *f, int frame_idx)
-{
-    (void)frame_idx;
-    cdt_frame_clear(f, 0);
-    for (int x = 0; x < CDT_FRAME_WIDTH; x++) {
-        cdt_frame_set(f, x, 0, 1);
-        cdt_frame_set(f, x, CDT_FRAME_HEIGHT - 1, 1);
-    }
-    for (int y = 0; y < CDT_FRAME_HEIGHT; y++) {
-        cdt_frame_set(f, 0, y, 1);
-        cdt_frame_set(f, CDT_FRAME_WIDTH - 1, y, 1);
-    }
-    draw_text_rot(f, "CODEX", 180, 142, 0);   /* 居中，正常横向 */
-    draw_text_rot(f, "CODEX", 180, 40, 0);    /* 上方，正常横向 */
-    draw_text_rot(f, "CODEX", 340, 130, 90);  /* 右侧，顺转 90° */
-    draw_text_rot(f, "CODEX", 180, 244, 180); /* 下方，倒置 */
-    draw_text_rot(f, "CODEX", 44, 130, 270);  /* 左侧，逆转 90° */
-}
-
-/* ⑤ 全黑/全白交替：帧 0/2 = 全黑，帧 1/3 = 全白 */
-static void draw_bwflash(cdt_frame_t *f, int frame_idx)
-{
-    cdt_frame_clear(f, (frame_idx & 1) == 0);
-}
-
+/* 场景表：now_ms 为 cdt_present 的固定单调时钟（对应模拟器 --fixed-clock）。
+ * NOW 场景取 1ms（时长显示 00:00，同 golden f001 的 0ms 显示）；USAGE 场景取
+ * 3000ms（与 golden f004 的 at_ms=3000 对齐，RST 倒计时同值）。 */
 typedef struct {
-    const char *name;
-    int frames;
-    int frame_ms;
-    void (*draw)(cdt_frame_t *f, int frame_idx);
-} pattern_t;
+    const char *name;      /* 串口场景名（=对齐脚本键） */
+    const char *json;      /* AppState JSON（p43_scenes.h 生成） */
+    cdt_page_t page;       /* DeviceRuntime.selected_page（KEY 未接，由场景指定） */
+    uint32_t now_ms;       /* cdt_present 固定时钟 */
+    const char *golden;    /* 视觉对照 golden 帧名（tests/golden，非像素目标） */
+} p43_scene_t;
 
-static const pattern_t k_patterns[] = {
-    { "corners",   1, PATTERN_MS, draw_corners },
-    { "checker16", 1, PATTERN_MS, draw_checker16 },
-    { "lines30",   1, PATTERN_MS, draw_lines30 },
-    { "text4dir",  1, PATTERN_MS, draw_text4dir },
-    { "bwflash",   4, FLASH_MS,  draw_bwflash },
+static const p43_scene_t k_scenes[] = {
+    { "F01_idle",       P43_SCENE_IDLE_JSON,       CDT_PAGE_NOW,   1,
+      "S01_idle__f001_idle.png" },
+    { "F03_working",    P43_SCENE_WORKING_JSON,    CDT_PAGE_NOW,   1,
+      "S03_working__f001_working.png" },
+    { "F05_needs_you",  P43_SCENE_NEEDS_YOU_JSON,  CDT_PAGE_NOW,   1,
+      "S05_needs_you__f001_needs_you.png" },
+    { "F19_usage_0",    P43_SCENE_USAGE0_JSON,     CDT_PAGE_USAGE, 3000,
+      "S19_usage_0__f004_usage_page.png" },
+    { "F20_usage_100",  P43_SCENE_USAGE100_JSON,   CDT_PAGE_USAGE, 3000,
+      "S20_usage_100__f004_usage_page.png" },
+    { "F06_valid_full", P43_SCENE_VALID_FULL_JSON, CDT_PAGE_NOW,   1,
+      "(no golden; NOW needs_you+plan, CJK)" },
 };
 
-#define PATTERN_COUNT (sizeof k_patterns / sizeof k_patterns[0])
+#define SCENE_COUNT (sizeof k_scenes / sizeof k_scenes[0])
 
-void app_main(void)
+/* 大对象静态化：不占 ui 任务栈（app_state/view 均为 KB 级） */
+static cdt_app_state_t s_state;
+static cdt_runtime_t s_runtime;
+static cdt_view_t s_view;
+static cdt_nav_t s_nav;
+
+/* ---- 合成 DeviceRuntime：与模拟器 synth_runtime（--state 路径）同值 ----
+ * 电池 3900mV（usable 50%，§7.1 线性估算）、link connected、last_rx=0、
+ * 充电/外接 unknown（不根据高电压猜充电）、transport "mock"、power ACTIVE。 */
+static void synth_runtime(cdt_page_t page)
 {
-    static cdt_frame_t frame; /* 15000 B BSS，避免任务栈占用 */
+    memset(&s_runtime, 0, sizeof(s_runtime));
+    s_runtime.battery_valid = true;
+    s_runtime.battery_mv = 3900;
+    s_runtime.usable_percent = (uint8_t)((3900 - 3600) * 100 / 600);
+    s_runtime.charging = CDT_PRESENCE_UNKNOWN;
+    s_runtime.external_power = CDT_PRESENCE_UNKNOWN;
+    s_runtime.power_state = CDT_POWER_ACTIVE;
+    snprintf(s_runtime.transport, sizeof(s_runtime.transport), "mock");
+    s_runtime.link_state = CDT_LINK_CONNECTED;
+    s_runtime.last_rx_monotonic_ms = 0;
+    s_runtime.selected_page = page;
+}
 
-    ESP_LOGI(TAG, "P4.2 ST7305 test-pattern loop: logic 400x300@1bpp (1=black), "
-                  "native 300x400 packed, SPI %d MHz, settle %d ms",
-             ST7305_PCLK_HZ / 1000000, ST7305_SETTLE_MS);
+/* ---- 应用一个场景：解析→present→apply→整屏刷新（同步 flush）→CRC 打印 ---- */
+static void apply_scene(const p43_scene_t *sc)
+{
+    cdt_parse_result_t r =
+        cdt_state_parse(sc->json, strlen(sc->json), &s_state);
+    if (r != CDT_PARSE_OK) {
+        ESP_LOGE(TAG, "scene=%s ERROR: AppState rejected by parser (code %d)",
+                 sc->name, (int)r);
+        return;
+    }
+
+    synth_runtime(sc->page);
+    cdt_nav_init(&s_nav, sc->page);
+    /* 与模拟器 --state 路径同序：present → apply_nav（clamp 在 apply 内） */
+    cdt_present(&s_state, &s_runtime, sc->now_ms, &s_view);
+    cdt_ui_apply_nav(&s_view, &s_nav);
+
+    cdt_lvgl_port_refresh(); /* 整屏重绘 + 同步 flush 落面板 */
+    const cdt_frame_t *f = cdt_lvgl_port_frame();
+    uint32_t crc = cdt_crc32(f->px, CDT_FRAME_BYTES);
+
+    ESP_LOGI(TAG, "scene=%s crc32=0x%08lx page=%d now_ms=%lu status=\"%s\" "
+                  "elapsed=\"%s\" voltage=\"%s\" bytes=%d golden=%s",
+             sc->name, (unsigned long)crc, (int)s_view.page,
+             (unsigned long)sc->now_ms, s_view.status_label,
+             s_view.elapsed_text, s_view.voltage_text, (int)CDT_FRAME_BYTES,
+             sc->golden);
+}
+
+static void ui_task(void *arg)
+{
+    (void)arg;
+    size_t i = 0;
+
+    ESP_LOGI(TAG, "P4.3 shared-ui on ST7305: %u scenes, %d ms period, "
+                  "logic 400x300@1bpp (1=black), LVGL %d.%d.%d",
+             (unsigned)SCENE_COUNT, SCENE_PERIOD_MS,
+             lv_version_major(), lv_version_minor(), lv_version_patch());
 
     st7305_config_t cfg = st7305_default_config();
     esp_err_t err = st7305_init(&cfg);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "st7305_init failed: %s — pattern loop aborted",
+        ESP_LOGE(TAG, "st7305_init failed: %s — UI loop aborted",
                  esp_err_to_name(err));
+        vTaskDelete(NULL);
         return;
     }
 
-    uint32_t cycle = 0;
-    while (true) {
-        for (size_t p = 0; p < PATTERN_COUNT; p++) {
-            const pattern_t *pat = &k_patterns[p];
-            for (int fi = 0; fi < pat->frames; fi++) {
-                pat->draw(&frame, fi);
-                uint32_t crc = cdt_crc32(frame.px, CDT_FRAME_BYTES);
-                ESP_LOGI(TAG, "cycle=%lu pattern=%s frame=%d/%d bytes=%d crc32=0x%08lx",
-                         (unsigned long)cycle, pat->name, fi + 1, pat->frames,
-                         (int)CDT_FRAME_BYTES, (unsigned long)crc);
-                err = st7305_flush(&frame);
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "flush failed: %s (pattern=%s frame=%d)",
-                             esp_err_to_name(err), pat->name, fi + 1);
-                }
-                vTaskDelay(pdMS_TO_TICKS(pat->frame_ms));
-            }
+    err = cdt_lvgl_port_display_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "lvgl display init failed: %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    cdt_ui_init(); /* 五页构建（字体先于页面），初始 NOW */
+    apply_scene(&k_scenes[0]);
+
+    TickType_t last_switch = xTaskGetTickCount();
+    for (;;) {
+        lv_timer_handler(); /* LVGL 时基来自 LV_TICK_CUSTOM(esp_timer)，无需 tick 任务 */
+        if ((xTaskGetTickCount() - last_switch) >=
+            pdMS_TO_TICKS(SCENE_PERIOD_MS)) {
+            last_switch = xTaskGetTickCount();
+            i = (i + 1) % SCENE_COUNT;
+            apply_scene(&k_scenes[i]);
         }
-        cycle++;
+        vTaskDelay(pdMS_TO_TICKS(UI_TASK_PERIOD_MS));
+    }
+}
+
+void app_main(void)
+{
+    BaseType_t ok = xTaskCreate(ui_task, "p43_ui", UI_TASK_STACK_BYTES / sizeof(StackType_t),
+                                NULL, tskIDLE_PRIORITY + 5, NULL);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "create ui task failed");
     }
 }
