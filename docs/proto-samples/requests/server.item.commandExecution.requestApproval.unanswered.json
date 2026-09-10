@@ -1,0 +1,36 @@
+{
+  "method": "item/commandExecution/requestApproval",
+  "id": 0,
+  "params": {
+    "kind": "command",
+    "threadId": "01a08998-a241-78b1-8be0-8d4b3b6a5609",
+    "turnId": "01a08998-a2fe-71e1-9377-725215f6287a",
+    "itemId": "exec-a1e4b438-28fe-4001-a702-3a573dc13821",
+    "startedAtMs": 1789014886328,
+    "environmentId": "local",
+    "command": "/bin/zsh -lc 'uname -a'",
+    "cwd": "/var/folders/h5/vv9n41yj2_l34whs76b4zpdh0000gn/T/codex-probe-approval-eezkl7e1",
+    "commandActions": [
+      {
+        "type": "unknown",
+        "command": "uname -a"
+      }
+    ],
+    "proposedExecpolicyAmendment": [
+      "uname",
+      "-a"
+    ],
+    "availableDecisions": [
+      "accept",
+      {
+        "acceptWithExecpolicyAmendment": {
+          "execpolicy_amendment": [
+            "uname",
+            "-a"
+          ]
+        }
+      },
+      "cancel"
+    ]
+  }
+}

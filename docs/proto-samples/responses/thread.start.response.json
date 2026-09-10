@@ -1,0 +1,53 @@
+{
+  "thread": {
+    "id": "01a0899b-fc07-7302-91c4-0adce9a04451",
+    "extra": null,
+    "sessionId": "<redacted>",
+    "forkedFromId": null,
+    "parentThreadId": null,
+    "preview": "<content len=15>",
+    "ephemeral": true,
+    "section": null,
+    "sectionEnteredAt": null,
+    "projectId": null,
+    "historyMode": "legacy",
+    "modelProvider": "openai",
+    "createdAt": 1789015096,
+    "updatedAt": 1789015096,
+    "recencyAt": 1789015096,
+    "status": {
+      "type": "idle"
+    },
+    "path": null,
+    "cwd": "/var/folders/h5/vv9n41yj2_l34whs76b4zpdh0000gn/T/codex-probe-m_a9kfee",
+    "cliVersion": "0.152.0",
+    "source": "vscode",
+    "canAcceptDirectInput": true,
+    "threadSource": null,
+    "agentNickname": null,
+    "agentRole": null,
+    "gitInfo": null,
+    "name": null,
+    "turns": []
+  },
+  "model": "gpt-5.6-sol",
+  "modelProvider": "openai",
+  "serviceTier": "default",
+  "cwd": "/var/folders/h5/vv9n41yj2_l34whs76b4zpdh0000gn/T/codex-probe-m_a9kfee",
+  "runtimeWorkspaceRoots": [
+    "/var/folders/h5/vv9n41yj2_l34whs76b4zpdh0000gn/T/codex-probe-m_a9kfee"
+  ],
+  "instructionSources": [],
+  "approvalPolicy": "never",
+  "approvalsReviewer": "user",
+  "sandbox": {
+    "type": "readOnly",
+    "networkAccess": false
+  },
+  "activePermissionProfile": {
+    "id": ":read-only",
+    "extends": null
+  },
+  "reasoningEffort": "medium",
+  "multiAgentMode": "explicitRequestOnly"
+}

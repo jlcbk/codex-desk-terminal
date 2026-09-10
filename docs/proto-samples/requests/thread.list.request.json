@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "thread/list",
+  "params": {
+    "limit": 5
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "method": "item/started",
+  "params": {
+    "item": {
+      "type": "agentMessage",
+      "id": "msg_000497317b0c0908016aa2343ec5e087d0ac312c340a95188a",
+      "text": "<content len=15>",
+      "phase": "final_answer",
+      "memoryCitation": null,
+      "delivery": null
+    },
+    "threadId": "01a0899b-fc07-7302-91c4-0adce9a04451",
+    "turnId": "01a0899b-fcf6-70c1-8810-4880b5300038",
+    "startedAtMs": 1789015102781
+  },
+  "emittedAtMs": 1789015102781
+}

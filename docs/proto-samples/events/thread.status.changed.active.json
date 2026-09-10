@@ -1,0 +1,11 @@
+{
+  "method": "thread/status/changed",
+  "params": {
+    "threadId": "01a0899b-fc07-7302-91c4-0adce9a04451",
+    "status": {
+      "type": "active",
+      "activeFlags": []
+    }
+  },
+  "emittedAtMs": 1789015096586
+}

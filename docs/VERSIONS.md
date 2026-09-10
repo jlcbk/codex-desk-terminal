@@ -24,14 +24,14 @@
 | Bridge Python | CPython 3.12.x | 经 uv 安装并固定（`uv python install 3.12` + 项目内 lock）；标准库优先，第三方包逐个审批入库 | python.org 经 uv 分发 |
 | 字体（CJK） | Noto Sans SC（SIL OFL 1.1） | 源：github.com/notofonts/noto-cjk（OFL 授权）；经 LVGL v9 官方 font converter 生成子集；子集字符表在 P2.1 冻结并记录可用范围 | 授权允许嵌入分发 |
 | ESP-IDF（固件构建） | 5.5.5 | tag `v5.5.5`（`ff1bac0aeecdd2b797b9c3a558c6bd03629bc013`） | 厂商 wiki 要求 ≥V5.5.0（docs/HARDWARE.md §6）；vendor 仓库自带 sdkconfig 由 5.4.3 生成（已记录冲突），P4.1 须用本锁定版重建官方最小例验证 |
+| Bleak（macOS BLE central） | 3.0.2 | PyPI 实查 2026-09-10（pip index+项目页双源）；MIT；requires_python ≥3.10，兼容 Bridge CPython 3.12 | P0.5 选型；3.x 与 1.x 的 API 差异以 P3.4 小样实测为准 |
+| websockets（Bridge WSS server） | 17.1 | PyPI 实查 2026-09-10，2026-08-26 发布；BSD-3-Clause；requires_python ≥3.11 | P0.5 选型 |
 
 ## 待锁定（阻塞于并行任务结果）
 
 | 依赖 | 计划 | 阻塞于 |
 |---|---|---|
-| BLE central（macOS） | 候选 Bleak（版本在 P0.5 锁定） | P0.5 |
-| Wi-Fi WSS server 库（Python） | 候选成熟 WebSocket 库（websockets 等，P0.5 锁定） | P0.5 |
-| JSON 解析库（C，共享/固件） | 候选收紧上限的流式解析器（P0.5/P1.4 评审后锁定） | P1.4 |
+| JSON 解析库（C，共享/固件） | 候选收紧上限的流式解析器（P1.4 评审后锁定） | P1.4 |
 
 ## 宿主缺口与既定方案（无 Homebrew）
 

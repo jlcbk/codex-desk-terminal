@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "turn/interrupt",
+  "params": {
+    "threadId": "01a08998-a241-78b1-8be0-8d4b3b6a5609",
+    "turnId": "01a08998-a2fe-71e1-9377-725215f6287a"
+  }
+}

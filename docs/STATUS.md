@@ -9,9 +9,12 @@
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
 | P0.1 | A0 | done | 无 | 2 次提交（基础仓库+版本清单） | `git log --oneline`；docs/VERSIONS.md 全条目带精确 tag/commit | docs/VERSIONS.md | 无 |
-| P0.2 | A1（子代理） | doing | 无 | - | `codex --version`；scripts/probe/ 下各脚本 | docs/CODEX_CAPABILITIES.md（进行中） | - |
-| P0.3 | A3（子代理） | done | 无 | （本次提交） | docs/HARDWARE.md §8 复核命令（A0 抽查 6/6 通过） | docs/HARDWARE.md | 10 项 unverified 已列 §7；ESP-IDF 已锁 v5.5.5 回填 VERSIONS |
-| P0.4 | A0（子代理起草+A0冻结） | done | P0.2 能力已知 | （本次提交） | `uv run --with jsonschema python scripts/check_protocol.py`（15/15 PASS 退出码 0）；`cc -std=c99 -pedantic -fsyntax-only shared/state/codex_state.h` | protocol/、shared/state/、tests/fixtures/protocol/、artifacts/protocol/P0.4-draft-check-report.txt | 10 项裁决已落实（INTERFACES §1a/§3）；深度12合法侧 fixture 归 P1.5 |
+| P0.2 | A1（子代理） | done | 无 | （本次提交） | `python3 scripts/probe/probe_04_rate_limits.py`（A0 复跑 PASS，29%/23% 实时值；摘要键名 bug 已修）；其余探针见 scripts/probe/README.md | docs/CODEX_CAPABILITIES.md、docs/proto-samples/、scripts/probe/、artifacts/probe/ | **桌面运行时不可旁听**（私有 stdio 子进程，无 daemon）→ P3.6 保持 blocked；额度/bridge-owned 事件流可用；CLI 维持 0.152.0，升级需重生成 schema 基线（P3.1 决策点） |
+| P0.3 | A3（子代理） | done | 无 | （已提交） | docs/HARDWARE.md §8 复核命令（A0 抽查 6/6 通过） | docs/HARDWARE.md | 10 项 unverified 已列 §7；ESP-IDF 已锁 v5.5.5 回填 VERSIONS |
+| P0.4 | A0（子代理起草+A0冻结） | done | P0.2 能力已知 | （已提交） | `uv run --with jsonschema python scripts/check_protocol.py`（15/15 PASS 退出码 0）；`cc -std=c99 -pedantic -fsyntax-only shared/state/codex_state.h` | protocol/、shared/state/、tests/fixtures/protocol/、artifacts/protocol/P0.4-draft-check-report.txt | 10 项裁决已落实（INTERFACES §1a/§3）；深度12合法侧 fixture 归 P1.5 |
+| P0.5 | A4（子代理） | done | P0.4（done） | （本次提交） | `python3 scripts/gen_crc_vectors.py --verify`（A0 复跑退出码 0）；`cc -std=c99 -pedantic -fsyntax-only -I shared/transport shared/transport/cdt_frame.h` | protocol/transport.md、shared/transport/cdt_frame.h、scripts/gen_crc_vectors.py | KEY 配对确认/权限弹窗文案/MTU23 吞吐三项待 P3 小样实测（transport.md §7 已列判据） |
+
+**P0 Gate 结论（2026-09-10，A0）：通过。** 协议冻结（P0.4）、能力矩阵（P0.2）、硬件证据（P0.3）、传输冻结（P0.5）齐备；桌面实时源不可接已如实记录为真实集成阻塞（P3.6 blocked），不以 Mock 掩盖；P1/P2/P4/P5 照常推进。剩余待勾选项（队列/内存边界）随 P1.4/P2 落实。
 | P0.5 | A4 | todo | P0.4 | - | - | - | - |
 
 ## P1：State、Mock 与模拟器基础

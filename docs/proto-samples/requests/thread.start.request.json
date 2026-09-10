@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "thread/start",
+  "params": {
+    "cwd": "/var/folders/h5/vv9n41yj2_l34whs76b4zpdh0000gn/T/codex-probe-m_a9kfee",
+    "ephemeral": true,
+    "approvalPolicy": "never",
+    "sandboxPolicy": {
+      "type": "readOnly",
+      "networkAccess": false
+    },
+    "model": "gpt-5.6-sol"
+  }
+}

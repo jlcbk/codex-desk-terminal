@@ -196,9 +196,9 @@ Transport回调不调用LVGL。解析任务将最新已验证快照交给UI任�
 ## 9. P0 冻结清单
 
 - [x] AppState/Telemetry schema与本文示例一致，所有长度/深度由两端执行。（P0.4 已冻结，2026-09-10；schema=protocol/*.schema.json，C 类型=shared/state/codex_state.h，fixtures=tests/fixtures/protocol/ 15/15）
-- [ ] 选定IDF、LVGL、SDL、Bridge依赖版本及官方板级示例commit。（IDF v5.5.5/LVGL v9.3.0/SDL2 2.30.12 已锁，Bridge 依赖待 P0.5）
-- [ ] 本机app-server能力矩阵与事件命名已核验；不可观察字段使用unknown。
-- [ ] BLE UUID、帧头、CRC测试向量、macOS配对流程确定。
-- [ ] Wi-Fi证书/设备token安全配置和开发loopback流程确定。
-- [ ] 电源参数、实际ADC分压、KEY/USB可用唤醒路径明确。
-- [ ] 普通/优先队列、内存预算、缓冲ownership以及UI单线程边界一致。
+- [x] 选定IDF、LVGL、SDL、Bridge依赖版本及官方板级示例commit。（IDF v5.5.5 / LVGL v9.3.0 / SDL2 2.30.12 / Bleak 3.0.2 / websockets 17.1，见 docs/VERSIONS.md）
+- [x] 本机app-server能力矩阵与事件命名已核验；不可观察字段使用unknown。（P0.2 完成：桌面运行时不可旁听→真实桌面集成记为阻塞，P3.6 保持 blocked；额度/bridge-owned 事件流可用，见 docs/CODEX_CAPABILITIES.md）
+- [x] BLE UUID、帧头、CRC测试向量、macOS配对流程确定。（P0.5 冻结，见 protocol/transport.md：UUIDv5 定值、16 字节帧头偏移实测、CRC 4 向量、SPKI pinning+加密配对流程）
+- [x] Wi-Fi证书/设备token安全配置和开发loopback流程确定。（P0.5：自签 CA+SPKI SHA-256 pinning、Bearer 设备 token 独立于 Codex 凭证、401/403/证书失败=CONFIG_ERROR 不重试，见 protocol/transport.md）
+- [x] 电源参数、实际ADC分压、KEY/USB可用唤醒路径明确。（P0.3 完成：GPIO4=ADC1_CH3 ×3 分压 confirmed；KEY 深睡唤醒 unverified 保底 PWR 上电；USB 检测按"无"设计，见 docs/HARDWARE.md §7 十项清单）
+- [ ] 普通/优先队列、内存预算、缓冲ownership以及UI单线程边界一致。（P1.4/P2 落实后勾选）

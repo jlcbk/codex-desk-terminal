@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "turn/start",
+  "params": {
+    "threadId": "01a0899b-fc07-7302-91c4-0adce9a04451",
+    "input": [
+      {
+        "type": "text",
+        "text": "只回复 ok"
+      }
+    ]
+  }
+}

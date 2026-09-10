@@ -1,0 +1,8 @@
+{
+  "method": "serverRequest/resolved",
+  "params": {
+    "threadId": "01a08998-a241-78b1-8be0-8d4b3b6a5609",
+    "requestId": 0
+  },
+  "emittedAtMs": 1789014894850
+}
