@@ -1,32 +1,28 @@
 /**
  * @file main.c
- * codex-display-sim 模拟器（P1.3 骨架 + P2.1 状态注入/渲染/抓帧，A2）。
+ * codex-display-sim 模拟器（P1.3 骨架 + P2.1 状态注入/渲染/抓帧
+ * + P2.2/P2.3 导航与强制页，A2）。
  *
- * P2.1 新增（宿主行为只在本文件，shared/ui 不做 IO）：
- *   --state <file.json>      启动读入 AppState JSON（shared/state 解析器；
- *                            坏文件/非法 JSON 报错并以非 0 退出）
- *   --battery-mv N           合成 DeviceRuntime 电池电压；
- *                            usable_percent = clamp((mv-3600)/600*100)（§7.1）
- *   --link-state <s>         connected | stale | disconnected（默认 connected）
- *   --capture-frame out.bmp  退出前把 400×300 逻辑帧（经 cdt_frame_t 公共单色
- *                            格式，1=黑）存 1bpp BMP——供 P2.4 golden 流使用；
- *                            不是 SDL 窗口截图
- *   --quit-after-ms N        N 毫秒后自动退出（等价旧环境变量 SIM_AUTO_QUIT_MS）
+ * P2.2/P2.3 新增（宿主行为只在本文件，shared/ui 不做 IO）：
+ *   --page <now|agents|plan|usage>   初始普通页（写 DeviceRuntime.selected_page）
+ *   --battery-seq "<mv>@<ms>,..."    电池采样序列：经与固件相同的 Power FSM
+ *                                    （shared/power，P5.1）步进产生保护态，
+ *                                    runtime.power_state 取 FSM 终态——LOW BATTERY
+ *                                    强制页由真实 FSM 驱动，不提供直接画低压页的捷径
+ *   KEY 导航：Space/Right=短按（cdt_nav_key：子页先推进再切主页面）、
+ *   m=长按（静音当前提醒）；强制低压页拒普通页切换
  *
- * 保留 P1.3 行为：无 --state 时渲染占位画面；SIM_CAPTURE_PATH 仍存 SDL 帧
- * （人工证据）；Esc/窗口关闭退出；Space/Right 打印 KEY 事件。
- *
- * 键盘映射：
- *   Space / Right  -> KEY 短按（转发 cdt_ui_key 骨架并打印；导航 P2.2）
- *   Esc            -> 退出
- *   窗口关闭按钮    -> LVGL LV_SDL_DIRECT_EXIT 路径（SDL_Quit + lv_deinit + exit(0)）
+ * P2.1 保留：--state/--battery-mv/--link-state/--capture-frame/--quit-after-ms/
+ * --fixed-clock；无 --state 时渲染占位画面；Esc/窗口关闭退出。
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "cdt_frame.h"
+#include "cdt_nav.h"
 #include "cdt_parser.h"
+#include "cdt_power.h"
 #include "cdt_presenter.h"
 #include "cdt_ui.h"
 #include "lvgl.h"
@@ -46,6 +42,8 @@ typedef struct {
     const char *capture_frame;  /* --capture-frame（逻辑单色 BMP） */
     long quit_after_ms;         /* --quit-after-ms（<0 = 未指定） */
     long fixed_clock_ms;        /* --fixed-clock（<0 = 未指定；>0 时虚拟单调时钟恒定） */
+    cdt_page_t page;            /* --page（默认 NOW） */
+    const char *battery_seq;    /* --battery-seq "mv@ms,..."（FSM 驱动） */
 } sim_opts_t;
 
 static void usage(const char *prog)
@@ -53,12 +51,25 @@ static void usage(const char *prog)
     printf("usage: %s [options]\n"
            "  --state <file.json>          AppState JSON (shared/state parser; bad file -> exit != 0)\n"
            "  --battery-mv <N>             battery millivolts (default 3900)\n"
+           "  --battery-seq <mv>@<ms>,...  battery samples through the real Power FSM (P5.1)\n"
            "  --link-state <connected|stale|disconnected>  (default connected)\n"
+           "  --page <now|agents|plan|usage>  initial normal page (default now)\n"
            "  --capture-frame <out.bmp>    save logical 400x300 1bpp mono frame (1=black) on exit\n"
            "  --quit-after-ms <N>          auto quit after N ms (env SIM_AUTO_QUIT_MS still honored)\n"
            "  --fixed-clock <ms>           freeze monotonic clock at <ms> for deterministic capture (P2.4)\n"
+           "Keys: Space/Right=short press (page cycle), m=long press (mute), Esc=quit\n"
            "Env: SIM_AUTO_QUIT_MS, SIM_CAPTURE_PATH (legacy SDL-frame evidence)\n",
            prog);
+}
+
+static cdt_page_t parse_page(const char *s)
+{
+    if (strcmp(s, "now") == 0) return CDT_PAGE_NOW;
+    if (strcmp(s, "agents") == 0) return CDT_PAGE_AGENTS;
+    if (strcmp(s, "plan") == 0) return CDT_PAGE_PLAN;
+    if (strcmp(s, "usage") == 0) return CDT_PAGE_USAGE;
+    fprintf(stderr, "[sim] ERROR: --page must be now|agents|plan|usage\n");
+    exit(2);
 }
 
 static void parse_args(int argc, char **argv, sim_opts_t *o)
@@ -68,6 +79,7 @@ static void parse_args(int argc, char **argv, sim_opts_t *o)
     o->battery_mv = -1;
     o->quit_after_ms = -1;
     o->fixed_clock_ms = -1;
+    o->page = CDT_PAGE_NOW;
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -77,8 +89,14 @@ static void parse_args(int argc, char **argv, sim_opts_t *o)
         else if (strcmp(a, "--battery-mv") == 0 && i + 1 < argc) {
             o->battery_mv = atol(argv[++i]);
         }
+        else if (strcmp(a, "--battery-seq") == 0 && i + 1 < argc) {
+            o->battery_seq = argv[++i];
+        }
         else if (strcmp(a, "--link-state") == 0 && i + 1 < argc) {
             o->link_state = argv[++i];
+        }
+        else if (strcmp(a, "--page") == 0 && i + 1 < argc) {
+            o->page = parse_page(argv[++i]);
         }
         else if (strcmp(a, "--capture-frame") == 0 && i + 1 < argc) {
             o->capture_frame = argv[++i];
@@ -202,7 +220,79 @@ static void synth_runtime(const sim_opts_t *o, cdt_runtime_t *rt)
     }
     /* 快照视为进程启动时刻收到：last_rx=0，fresh 时时长随单调时间推进 */
     rt->last_rx_monotonic_ms = 0;
-    rt->selected_page = CDT_PAGE_NOW; /* P2.1 仅 NOW 单页 */
+    rt->selected_page = o->page; /* --page；强制页由 Presenter 按电源态仲裁 */
+}
+
+/*---------- --battery-seq：电池样本经真实 Power FSM（P5.1 共享实现）----------
+ * 契约：INTERFACES §4「battery_sample 经与固件相同的 Power FSM 产生
+ * LOW BATTERY，不能只换一张图冒充保护已验证」。本函数不提供绕过 FSM 的路径：
+ * runtime.power_state 只取 cdt_power_step 的终态。 */
+
+static int run_battery_fsm(const char *seq, cdt_runtime_t *rt)
+{
+    cdt_power_fsm_t fsm;
+    cdt_power_params_t params;
+    cdt_power_input_t in;
+    cdt_power_action_t actions;
+    long mv, ms;
+    char buf[1024];
+    char *p, *tok;
+    bool have_last = false;
+    long last_mv = 0;
+
+    if (seq == NULL || seq[0] == '\0') {
+        fprintf(stderr, "[sim] ERROR: --battery-seq empty\n");
+        return -1;
+    }
+    if (strlen(seq) >= sizeof(buf)) {
+        fprintf(stderr, "[sim] ERROR: --battery-seq too long (max %zu chars)\n",
+                sizeof(buf) - 1);
+        return -1;
+    }
+    snprintf(buf, sizeof(buf), "%s", seq);
+
+    cdt_power_params_init(&params);
+    cdt_power_init(&fsm, &params, false);
+
+    tok = buf;
+    while (tok != NULL && *tok != '\0') {
+        p = strchr(tok, ',');
+        if (p != NULL) *p = '\0';
+        if (sscanf(tok, "%ld@%ld", &mv, &ms) != 2 || ms < 0 ||
+            mv < 0 || mv > 65535) {
+            fprintf(stderr, "[sim] ERROR: --battery-seq token '%s' (want mv@ms)\n", tok);
+            return -1;
+        }
+        in.kind = CDT_POWER_IN_SAMPLE;
+        in.sample.battery_mv = (uint16_t)mv;
+        in.sample.valid = (mv >= params.valid_min_mv && mv <= params.valid_max_mv);
+        in.sample.at_ms = (int64_t)ms;
+        actions = cdt_power_step(&fsm, &in, (int64_t)ms);
+        if (actions != CDT_POWER_ACT_NONE) {
+            char abuf[160];
+            cdt_power_actions_str(abuf, sizeof(abuf), actions);
+            printf("[sim] FSM t=%ldms %s -> %s (%s)\n", ms, tok,
+                   cdt_power_state_str(fsm.state), abuf);
+        }
+        last_mv = mv;
+        have_last = true;
+        tok = (p != NULL) ? p + 1 : NULL;
+    }
+
+    if (!have_last) {
+        fprintf(stderr, "[sim] ERROR: --battery-seq has no samples\n");
+        return -1;
+    }
+    /* runtime = FSM 终态 + 最后一个样本值（保护态只能来自 FSM） */
+    rt->power_state = fsm.state;
+    rt->battery_valid = true;
+    rt->battery_mv = (uint16_t)last_mv;
+    rt->usable_percent = usable_percent_from_mv(last_mv);
+    printf("[sim] FSM final state: %s, battery=%ldmV usable=%u%%\n",
+           cdt_power_state_str(fsm.state), last_mv,
+           (unsigned)rt->usable_percent);
+    fflush(stdout);
+    return 0;
 }
 
 /*---------- 逻辑单色帧抓取（P2.4 golden 流入口）----------
@@ -319,14 +409,21 @@ static int write_frame_bmp(const cdt_frame_t *f, const char *path)
     return 0;
 }
 
-/*---------- SDL 事件观察（不消费事件，LVGL 的 SDL 驱动仍照常轮询） ----------*/
+/*---------- SDL 事件观察（不消费事件，LVGL 的 SDL 驱动仍照常轮询） ----------
+ * KEY 不在事件回调里直接操作 LVGL（避免与 lv_timer_handler 重入）：
+ * 只记录 pending，主循环每拍应用一次。 */
 
-static void key_event_skeleton(const char *sdl_name, const char *key_sem)
+static const cdt_app_state_t *g_state; /* main 初始化后只读（可 NULL） */
+static cdt_runtime_t *g_runtime;       /* main 的 runtime（导航写回目标） */
+static cdt_nav_t g_nav;                /* 导航状态（宿主持有） */
+static cdt_view_t g_last_view;         /* 最近一次 present 结果 */
+static volatile int g_pending_key = 0; /* 0=无；否则 cdt_key_event_t */
+
+static void sim_key_received(cdt_key_event_t ev)
 {
-    /* KEY 事件骨架：打印并转发共享 UI 桩（P2.2 接页面导航/静音）。 */
-    printf("[sim] KEY event: %s (SDL: %s)\n", key_sem, sdl_name);
+    printf("[sim] KEY event: %s\n", ev == CDT_KEY_LONG_PRESS ? "long_press" : "short_press");
     fflush(stdout);
-    cdt_ui_key(strcmp(key_sem, "long_press") == 0 ? CDT_KEY_LONG_PRESS : CDT_KEY_SHORT_PRESS);
+    g_pending_key = (int)ev;
 }
 
 static int SDLCALL sim_event_watch(void *userdata, SDL_Event *event)
@@ -346,10 +443,11 @@ static int SDLCALL sim_event_watch(void *userdata, SDL_Event *event)
                     g_quit_requested = 1;
                     break;
                 case SDLK_SPACE:
-                    key_event_skeleton("SPACE", "short_press");
-                    break;
                 case SDLK_RIGHT:
-                    key_event_skeleton("RIGHT", "short_press");
+                    sim_key_received(CDT_KEY_SHORT_PRESS);
+                    break;
+                case SDLK_m:
+                    sim_key_received(CDT_KEY_LONG_PRESS);
                     break;
                 default:
                     break;
@@ -359,6 +457,49 @@ static int SDLCALL sim_event_watch(void *userdata, SDL_Event *event)
             break;
     }
     return 0; /* 不修改/拦截事件，LVGL 的 sdl_event_handler 照常处理 */
+}
+
+/*---------- KEY → 导航/静音 → DeviceRuntime 写回（P2.2 宿主接线） ----------*/
+
+static void sim_apply_pending_key(lv_display_t *disp)
+{
+    cdt_key_event_t ev = (cdt_key_event_t)g_pending_key;
+    uint32_t act;
+    cdt_view_t view;
+
+    g_pending_key = 0;
+
+    act = cdt_nav_key(&g_nav, &g_last_view, ev);
+    if (act & CDT_NAV_ACT_PAGE) {
+        g_runtime->selected_page = g_nav.page; /* 主页面真源在 DeviceRuntime */
+        printf("[sim] nav -> page %d (sub agents=%u plan=%u)\n", (int)g_nav.page,
+               (unsigned)g_nav.agents_page, (unsigned)g_nav.plan_page);
+    }
+    if (act & CDT_NAV_ACT_MUTE) {
+        /* 长按只静音当前提醒（ACK=本地静音/已读，绝不等于批准操作）；
+         * 静音标识=当前选中线程 id（attention 归属线程）。 */
+        g_runtime->muted_attention_present = true;
+        if (g_state != NULL && g_state->thread_count > 0) {
+            const char *id = (g_state->selected_thread_id_present)
+                                 ? g_state->selected_thread_id
+                                 : g_state->threads[0].id;
+            snprintf(g_runtime->muted_attention_id, sizeof(g_runtime->muted_attention_id),
+                     "%s", id);
+        }
+        printf("[sim] muted current reminder (page unchanged, forced page NOT dismissed)\n");
+    }
+    if (act == CDT_NAV_ACT_NONE && ev == CDT_KEY_SHORT_PRESS) {
+        printf("[sim] short press REJECTED (forced LOW BATTERY page or subpage end)\n");
+    }
+
+    /* 立即重渲染（确定性模式固定时钟下内容仍确定） */
+    cdt_present(g_state, g_runtime, sim_now_ms(), &view);
+    g_last_view = view;
+    (void)cdt_nav_clamp(&g_nav, &view);
+    cdt_ui_apply_nav(&view, &g_nav);
+    lv_obj_invalidate(lv_screen_active());
+    lv_refr_now(disp);
+    fflush(stdout);
 }
 
 /*---------- 退出前抓帧（P1.3 旧行为：SDL 帧证据；窗口截图替代品） ----------*/
@@ -481,17 +622,27 @@ int main(int argc, char **argv)
     }
     g_opts = &opts;
     synth_runtime(&opts, &runtime);
+    if (opts.battery_seq != NULL) {
+        /* 电池样本经真实 Power FSM（P5.1）产生保护态；无捷径直画低压页 */
+        if (run_battery_fsm(opts.battery_seq, &runtime) != 0) {
+            return 2;
+        }
+    }
+    g_state = state_ptr;
+    g_runtime = &runtime;
+    cdt_nav_init(&g_nav, runtime.selected_page);
 
-    printf("[sim] codex-display-sim (P2.1) LVGL %d.%d.%d, %dx%d, LV_COLOR_DEPTH=%d\n",
+    printf("[sim] codex-display-sim (P2.2/P2.3) LVGL %d.%d.%d, %dx%d, LV_COLOR_DEPTH=%d\n",
            lv_version_major(), lv_version_minor(), lv_version_patch(),
            SIM_HOR_RES, SIM_VER_RES, LV_COLOR_DEPTH);
     if (state_ptr != NULL) {
-        printf("[sim] state: %s (seq=%llu, threads=%u, epoch=%.16s) battery=%umV link=%s\n",
+        printf("[sim] state: %s (seq=%llu, threads=%u, epoch=%.16s) battery=%umV link=%s page=%d\n",
                opts.state_path, (unsigned long long)state_ptr->seq,
                (unsigned)state_ptr->thread_count, state_ptr->bridge_epoch,
                (unsigned)runtime.battery_mv,
                runtime.link_state == CDT_LINK_CONNECTED ? "connected" :
-               runtime.link_state == CDT_LINK_STALE ? "stale" : "disconnected");
+               runtime.link_state == CDT_LINK_STALE ? "stale" : "disconnected",
+               (int)runtime.selected_page);
     }
     else {
         printf("[sim] no --state given: P1.3 placeholder UI\n");
@@ -518,7 +669,8 @@ int main(int argc, char **argv)
     if (state_ptr != NULL) {
         cdt_ui_init();
         cdt_present(state_ptr, &runtime, sim_now_ms(), &view);
-        cdt_ui_apply(&view);
+        g_last_view = view;
+        cdt_ui_apply_nav(&view, &g_nav);
     }
     else {
         sim_build_placeholder_ui();
@@ -552,8 +704,13 @@ int main(int argc, char **argv)
         if (state_ptr != NULL && (now - last_present) >= 200) {
             last_present = now;
             cdt_present(state_ptr, &runtime, sim_now_ms(), &view);
-            cdt_ui_apply(&view);
+            g_last_view = view;
+            cdt_ui_apply_nav(&view, &g_nav);
             lv_obj_invalidate(lv_screen_active());
+        }
+
+        if (g_pending_key != 0) {
+            sim_apply_pending_key(disp);
         }
 
         if(now - last_heartbeat >= 1000) {

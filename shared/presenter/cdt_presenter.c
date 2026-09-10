@@ -182,6 +182,33 @@ static const char *status_label_of(cdt_thread_state_t st)
     }
 }
 
+/* §6 AGENTS 行：needs_you > error > working/thinking > done > idle */
+static int agents_rank(cdt_thread_state_t st)
+{
+    switch (st) {
+        case CDT_THREAD_STATE_NEEDS_YOU: return 0;
+        case CDT_THREAD_STATE_ERROR: return 1;
+        case CDT_THREAD_STATE_WORKING: return 2;
+        case CDT_THREAD_STATE_THINKING: return 2;
+        case CDT_THREAD_STATE_DONE: return 3;
+        case CDT_THREAD_STATE_IDLE: return 4;
+        default: return 5;
+    }
+}
+
+/* §6 AGENTS 行排序比较：<0 = a 在前。同优先级按 updated_at 降序、id 升序。 */
+static int agents_cmp(const cdt_thread_t *a, const cdt_thread_t *b)
+{
+    int ra = agents_rank(a->state);
+    int rb = agents_rank(b->state);
+    int64_t ta = a->updated_at_ms_present ? a->updated_at_ms : 0;
+    int64_t tb = b->updated_at_ms_present ? b->updated_at_ms : 0;
+
+    if (ra != rb) return ra < rb ? -1 : 1;
+    if (ta != tb) return ta > tb ? -1 : 1;
+    return strcmp(a->id, b->id);
+}
+
 /* ================================================================== */
 /* cdt_present                                                         */
 /* ================================================================== */
@@ -198,6 +225,8 @@ void cdt_present(const cdt_app_state_t *state,
 
     if (view == NULL) return;
     memset(view, 0, sizeof(*view));
+    view->agents_pages = 1; /* 空数据也按单页处理（UI 显示空态） */
+    view->plan_pages = 1;
 
     if (rt == NULL) { /* 防御：全默认 runtime */
         memset(&rt_default, 0, sizeof(rt_default));
@@ -304,6 +333,50 @@ void cdt_present(const cdt_app_state_t *state,
                                    th->state == CDT_THREAD_STATE_ERROR);
     }
 
+    /* ---- P2.2：AGENTS 行（全部可见线程按 §6 排序：needs_you > error >
+     * working/thinking > done > idle；同级 updated_at 降序、id 升序。
+     * 插入排序索引数组（n≤8），再按序填充行副本。---- */
+    {
+        uint8_t order[CDT_MAX_THREADS];
+        uint8_t i, j;
+        uint8_t n = state->thread_count;
+
+        view->agents_count = n;
+        view->agents_hidden = (uint16_t)(state->threads_total > (uint16_t)n
+                                             ? state->threads_total - (uint16_t)n
+                                             : 0);
+        view->threads_truncated = state->threads_truncated;
+        for (i = 0; i < n; i++) order[i] = i;
+        for (i = 1; i < n; i++) {
+            uint8_t key = order[i];
+            for (j = i; j > 0 && agents_cmp(&state->threads[order[j - 1]],
+                                            &state->threads[key]) > 0; j--) {
+                order[j] = order[j - 1];
+            }
+            order[j] = key;
+        }
+        for (i = 0; i < n; i++) {
+            const cdt_thread_t *src = &state->threads[order[i]];
+            cdt_agents_row_t *row = &view->agents_rows[i];
+
+            row->state = src->state;
+            set_str(row->state_label, sizeof(row->state_label), status_label_of(src->state));
+            if (src->project[0] != '\0') {
+                trunc_cols(row->project, sizeof(row->project), src->project,
+                           CDT_VIEW_AGENTS_PROJECT_MAX_COLS);
+            }
+            else {
+                set_str(row->project, sizeof(row->project), "--");
+            }
+            row->waiting = (src->state == CDT_THREAD_STATE_NEEDS_YOU);
+            row->emphasized = (src->state == CDT_THREAD_STATE_NEEDS_YOU ||
+                               src->state == CDT_THREAD_STATE_ERROR);
+        }
+        view->agents_pages = (uint8_t)((n + CDT_VIEW_ROWS_PER_PAGE - 1) /
+                                       CDT_VIEW_ROWS_PER_PAGE);
+        if (view->agents_pages == 0) view->agents_pages = 1;
+    }
+
     /* ---- 文本（presenter 按列预算截断）---- */
     trunc_cols(view->project, sizeof(view->project), th->project, CDT_VIEW_PROJECT_MAX_COLS);
     if (th->project[0] == '\0') set_str(view->project, sizeof(view->project), "--");
@@ -328,21 +401,110 @@ void cdt_present(const cdt_app_state_t *state,
     fmt_duration(view->waiting_text, sizeof(view->waiting_text),
                  (uint64_t)th->waiting_ms + delta_ms);
 
-    /* ---- 计划摘要 "PLAN c/t"（completed/total；total==0 → 无计划隐藏）---- */
-    if (th->plan.total > 0) {
+    /* ---- P2.2：PLAN 页步骤（原始顺序；只数 completed；分页计数）----
+     * NOW 摘要 "PLAN c/t" 与 PLAN 页共用同一个 completed 计数。 */
+    {
         uint16_t completed = 0;
         uint8_t k;
+
         for (k = 0; k < th->plan.step_count; k++) {
             if ((cdt_step_status_t)th->plan.steps[k].status == CDT_STEP_STATUS_COMPLETED) {
                 completed++;
             }
         }
+        view->plan_completed = (uint8_t)(completed > 255u ? 255u : completed);
+        view->plan_total = th->plan.total;
+        view->plan_truncated = th->plan.truncated;
+        view->plan_step_count = th->plan.step_count;
+        for (k = 0; k < th->plan.step_count; k++) {
+            cdt_plan_step_row_t *row = &view->plan_steps[k];
+            if (th->plan.steps[k].text[0] != '\0') {
+                trunc_cols(row->text, sizeof(row->text), th->plan.steps[k].text,
+                           CDT_VIEW_STEP_MAX_COLS);
+            }
+            else {
+                set_str(row->text, sizeof(row->text), "--");
+            }
+            row->status = th->plan.steps[k].status;
+        }
+        view->plan_pages = (uint8_t)((th->plan.step_count + CDT_VIEW_ROWS_PER_PAGE - 1) /
+                                     CDT_VIEW_ROWS_PER_PAGE);
+        if (view->plan_pages == 0) view->plan_pages = 1; /* 空计划单页（暂无计划） */
+    }
+
+    /* ---- 计划摘要 "PLAN c/t"（completed/total；total==0 → 无计划隐藏）---- */
+    if (th->plan.total > 0) {
         snprintf(view->plan_text, sizeof(view->plan_text), "PLAN %u/%u",
-                 (unsigned)completed, (unsigned)th->plan.total);
+                 (unsigned)view->plan_completed, (unsigned)th->plan.total);
         view->plan_present = true;
     }
 
 usage_line:
+    /* ---- 业务时钟（USAGE reset 倒计时基准）：快照 generated_at_ms +
+     * fresh 单调增量；陈旧/缺失时冻结在 generated_at_ms（不猜新值）。
+     * generated_at 缺失 → 倒计时不可知（reset_present=false，UI 显示 RST --）。*/
+    {
+        int64_t business_now_ms = 0;
+        bool business_time_known = state->generated_at_ms_present;
+
+        if (business_time_known) {
+            business_now_ms = state->generated_at_ms + (int64_t)delta_ms;
+        }
+
+        /* ---- P2.2：USAGE 逐窗口行（label 取自数据，不编造窗口名）---- */
+        view->usage_count = 0;
+        if (state->usage.available) {
+            uint8_t k;
+            for (k = 0; k < state->usage.window_count; k++) {
+                const cdt_usage_window_t *src = &state->usage.windows[k];
+                cdt_usage_row_t *row = &view->usage_rows[view->usage_count];
+
+                if (src->label[0] != '\0') {
+                    trunc_cols(row->label, sizeof(row->label), src->label,
+                               CDT_VIEW_WIN_LABEL_MAX_COLS);
+                }
+                else {
+                    set_str(row->label, sizeof(row->label), "--");
+                }
+                if (src->used_percent_present) {
+                    unsigned pct = (unsigned)(src->used_percent + 0.5); /* 四舍五入显示 */
+                    if (pct > 100u) pct = 100u;
+                    row->pct_present = true;
+                    row->pct = (uint8_t)pct;
+                }
+                else {
+                    row->pct_present = false;
+                    row->pct = 0;
+                }
+                row->duration_mins = src->duration_mins;
+                if (src->resets_at_ms_present && business_time_known) {
+                    int64_t diff_s = (src->resets_at_ms - business_now_ms) / 1000;
+                    /* 防溢出钳制；<0 = 已过 reset（UI 显示 EXPIRED，不猜 0%） */
+                    if (diff_s > (int64_t)INT32_MAX) diff_s = INT32_MAX;
+                    if (diff_s < (int64_t)INT32_MIN) diff_s = INT32_MIN;
+                    row->reset_present = true;
+                    row->reset_in_s = (int32_t)diff_s;
+                }
+                else {
+                    row->reset_present = false;
+                    row->reset_in_s = 0;
+                }
+                view->usage_count++;
+            }
+        }
+
+        /* ---- P2.2：context 独立行（选中任务；只有可信百分比才算占用；
+         * 累计 token 不能冒充 context → 无百分比一律 "CTX --"）---- */
+        if (th != NULL && th->context.used_percent_present) {
+            unsigned pct = (unsigned)(th->context.used_percent + 0.5);
+            if (pct > 100u) pct = 100u;
+            snprintf(view->context_text, sizeof(view->context_text), "CTX %u%%", pct);
+        }
+        else {
+            set_str(view->context_text, sizeof(view->context_text), "CTX --");
+        }
+    }
+
     /* ---- 额度摘要：首窗口 label + used%，多窗口加 "+N"；缺失 → "--" ---- */
     if (state->usage.available && state->usage.window_count > 0) {
         const cdt_usage_window_t *w = &state->usage.windows[0];

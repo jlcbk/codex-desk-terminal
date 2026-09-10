@@ -1,5 +1,5 @@
 /*
- * cdt_ui_now.c — NOW 页构建与刷新（P2.1，A2）
+ * cdt_ui_now.c — NOW 页构建与刷新（P2.1 创建；P2.2 挂入整页根容器，A2）
  *
  * §6 NOW 行内容项 → 布局（400×300，外边距 8px，纯黑白两色）：
  *   y=  8.. 36  标题栏 28px：项目名（左）+ 电压（右）
@@ -13,13 +13,18 @@
  *   y= 230..250 attention 摘要（无则隐藏）
  *   y= 266..268 底栏分隔线；y=268..292 底栏 24px：页面指示（左）/静音文字标签（右）
  *
+ * P2.2 变更仅为结构：widgets 挂到整页根容器（400×300、透明、坐标不变），
+ * 由 cdt_ui.c 按生效页切换可见性；文本/样式/坐标与 P2.1 完全一致（渲染
+ * 逐像素不变，见 artifacts/ui 回归对照）。
+ *
  * 长文本两道防线：presenter 已按列预算截断（码点安全）+ LVGL dot 模式像素截断。
- * 非 ASCII 字符经 cdt_ui_ascii_safe 显示为 '?'（内置 Montserrat 为 ASCII 字体；
- * Noto Sans SC 子集属 P2.2）。UI 不做任何 IO/网络/ADC 调用。
+ * 非 ASCII 字符经 cdt_ui_ascii_safe 显示为 '?'（内置 Montserrat 为 ASCII 字体）。
+ * UI 不做任何 IO/网络/ADC 调用。
  */
 #include <stdio.h>
 
 #include "cdt_ui.h"
+#include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
 
 /* 字体（内置 Montserrat，ASCII；本任务在 lv_conf.h 打开 14/16/28）*/
@@ -27,6 +32,8 @@
 #define F_STATUS (&lv_font_montserrat_28)
 #define F_BODY   (&lv_font_montserrat_16)
 #define F_BAR    (&lv_font_montserrat_14)
+
+static lv_obj_t *now_root;
 
 typedef struct {
     lv_obj_t *project;      /* 标题栏左：项目名 */
@@ -49,30 +56,27 @@ static now_widgets_t w;
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font)
 {
-    lv_obj_t *l = lv_label_create(parent);
-    lv_obj_set_style_text_color(l, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_text_font(l, font, LV_PART_MAIN);
-    lv_label_set_text(l, "");
-    return l;
+    return cdt_uii_label(parent, font);
 }
 
 static void make_box(lv_obj_t *o, int x, int y, int wd, int ht)
 {
-    lv_obj_remove_style_all(o);
-    lv_obj_set_pos(o, (int32_t)x, (int32_t)y);
-    lv_obj_set_size(o, (int32_t)wd, (int32_t)ht);
+    cdt_uii_box(o, x, y, wd, ht);
+}
+
+lv_obj_t *cdt_ui_now_root(void)
+{
+    return now_root;
 }
 
 static void set_text_ascii(lv_obj_t *label, const char *view_text)
 {
-    char buf[CDT_VIEW_USAGE_BYTES + 8];
-    cdt_ui_ascii_safe(buf, sizeof(buf), view_text);
-    lv_label_set_text(label, buf);
+    cdt_uii_set_text(label, view_text);
 }
 
 void cdt_ui_now_create(void)
 {
-    lv_obj_t *scr = lv_screen_active();
+    lv_obj_t *scr = now_root = cdt_uii_page_root();
 
     /* ---- 标题栏 28px：项目名（左，dot 截断）+ 电压（右）---- */
     w.project = make_label(scr, F_TITLE);

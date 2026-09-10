@@ -49,13 +49,15 @@ simulator/smoke_offscreen.sh
 SDL_VIDEODRIVER=dummy SIM_AUTO_QUIT_MS=2000 ./build/simulator/codex-display-sim
 ```
 
-### 命令行参数（P2.1）
+### 命令行参数（P2.1；P2.2/P2.3 追加标注）
 
 | 参数 | 含义 |
 |---|---|
 | `--state <file.json>` | 启动读入 AppState JSON（shared/state 有界解析器；坏文件/非法 JSON 打印错误并以退出码 2 结束，先于 SDL 初始化） |
 | `--battery-mv <N>` | 合成 DeviceRuntime 电池电压（默认 3900）；usable_percent = clamp((mv−3600)/600×100)（§7.1）；charging/external_power 恒为 unknown（不根据电压猜充电） |
+| `--battery-seq "<mv>@<ms>,..."` | （P2.3）电池采样序列：逐个经与固件相同的 Power FSM（shared/power，P5.1）步进，`runtime.power_state` 只取 FSM 终态——LOW BATTERY 强制页由真实保护逻辑驱动，不提供直画低压页的捷径 |
 | `--link-state <connected\|stale\|disconnected>` | 链路状态（默认 connected）；快照视为进程启动时刻收到（last_rx=0），fresh 时 ELAPSED/WAITING 随单调时间推进，stale/disconnected 时 presenter 冻结 |
+| `--page <now\|agents\|plan\|usage>` | （P2.2）初始普通页（写 DeviceRuntime.selected_page）；LOW BATTERY 强制页只能由 Power FSM 经 presenter 仲裁产出，`--page` 无法触达 |
 | `--capture-frame <out.bmp>` | 退出前把 400×300 逻辑帧经 `cdt_frame_t`（shared/display 公共单色格式：1bpp、行 50 字节、MSB=左、1=黑）存 1bpp BMP（调色板 0=白 1=黑）。供 P2.4 golden 流使用，**不是 SDL 截图** |
 | `--quit-after-ms <N>` | N 毫秒后自动退出（旧环境变量 SIM_AUTO_QUIT_MS 仍生效） |
 | `--fixed-clock <ms>` | 虚拟单调时钟恒为 N ms（时长不随真实时间变化；跨机器 golden 抓帧确定性，P2.4 用） |
@@ -73,15 +75,16 @@ flush 支持整帧，dirty_area 仅是优化提示，INTERFACES §5），退出�
 重新打包为 `cdt_frame_t` 后写 1bpp BMP。`--fixed-clock` 下两次运行帧逐字节一致
 （已实测 500ms 与 1500ms 运行 `cmp` 相同）。
 
-## 键盘映射（KEY 骨架）
+## 键盘映射（KEY 导航，P2.2 接线完成）
 
 | 按键 | 语义 |
 |---|---|
-| Space / → | KEY 短按（打印并转发 `cdt_ui_key` 桩；页面轮换 P2.2 接线） |
+| Space / → | KEY 短按：AGENTS/PLAN 子页先推进，末子页再切下一主页面（NOW→AGENTS→PLAN→USAGE 轮换；`cdt_nav_key` 纯逻辑，宿主写回 `runtime.selected_page`） |
+| m | KEY 长按：静音当前提醒（写 `runtime.muted_attention_id`；只静音，不切页、不解除 LOW BATTERY 强制页） |
 | Esc | 退出 |
 | 窗口关闭按钮 | LVGL `LV_SDL_DIRECT_EXIT` 路径退出（`SDL_Quit`+`lv_deinit`+`exit(0)`） |
 
-长按检测与静音翻转属 P2.2（需 DeviceRuntime 接线）；`cdt_ui_key` 为共享 UI 桩。
+LOW BATTERY 强制页期间短按被 `cdt_nav` 拒绝（页面/子页均不变），长按仍只记静音。
 
 ## 渲染与单色
 

@@ -39,18 +39,27 @@ target_include_directories(lvgl PRIVATE "${SDL2_PREFIX}/include")
 
 add_executable(codex-display-sim
     main.c
-    # shared/ 源码相对路径引用（不复制）：state 解析、公共单色帧、presenter、共享 UI
+    # shared/ 源码相对路径引用（不复制）：state 解析、公共单色帧、presenter、共享 UI、
+    # 导航纯逻辑（P2.2）、Power FSM（P2.3 证据帧经真实 FSM 驱动低压页）
     "${SIM_PROJ_ROOT}/shared/state/cdt_json.c"
     "${SIM_PROJ_ROOT}/shared/state/cdt_parser.c"
     "${SIM_PROJ_ROOT}/shared/display/cdt_frame.c"
     "${SIM_PROJ_ROOT}/shared/presenter/cdt_presenter.c"
+    "${SIM_PROJ_ROOT}/shared/power/cdt_power.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_now.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_internal.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_agents.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_plan.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_usage.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_lowbat.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_nav.c"
 )
 target_include_directories(codex-display-sim PRIVATE
     "${SIM_PROJ_ROOT}/shared/state"
     "${SIM_PROJ_ROOT}/shared/display"
     "${SIM_PROJ_ROOT}/shared/presenter"
+    "${SIM_PROJ_ROOT}/shared/power"
     "${SIM_PROJ_ROOT}/shared/ui"
 )
 target_link_libraries(codex-display-sim PRIVATE lvgl SDL2::SDL2-static)

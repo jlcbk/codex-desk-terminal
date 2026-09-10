@@ -13,11 +13,15 @@
 extern "C" {
 #endif
 
-/* 在当前活动屏幕构建 NOW 页静态布局（固定坐标，不随内容回流）。*/
+/* 在当前活动屏幕构建 NOW 页静态布局（固定坐标，不随内容回流）。
+ * P2.2 起 widgets 挂在本页整屏根容器下（坐标不变）。*/
 void cdt_ui_now_create(void);
 
 /* 按 ViewModel 刷新 NOW 页（文本/可见性/黑白强调样式）。*/
 void cdt_ui_now_apply(const cdt_view_t *view);
+
+/* 本页根容器（cdt_ui.c 页面可见性调度用）。*/
+lv_obj_t *cdt_ui_now_root(void);
 
 #ifdef __cplusplus
 }

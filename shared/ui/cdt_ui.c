@@ -1,13 +1,41 @@
 /*
- * cdt_ui.c — UI 入口：ui_init / ui_apply / ui_key（P2.1，A2）
+ * cdt_ui.c — UI 入口：ui_init / ui_apply / ui_apply_nav / ui_key（P2.1–P2.3，A2）
  *
- * P2.1 范围：NOW 单页（cdt_ui_now.c）；页面调度、KEY 导航归 P2.2。
+ * P2.2/P2.3 范围：五页调度（NOW/AGENTS/PLAN/USAGE/LOW BATTERY）、导航状态
+ * 缓存、KEY 入口。页面选择真源在宿主 DeviceRuntime.selected_page；本层缓存
+ * 导航副本仅为 cdt_ui_apply(view) / cdt_ui_key(ev) 便捷路径服务。
  * ui_init 假定调用方已完成 lv_init 并创建了 LVGL display（活动屏幕即页面根）。
  */
 #include <stdio.h>
 
-#include "cdt_ui.h"
+#include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
+#include "cdt_ui_pages.h"
+
+static cdt_nav_t g_nav;        /* 导航缓存（apply/key 便捷路径） */
+static cdt_view_t g_last_view; /* 最近一次 apply 的 ViewModel（key 依赖页数/forced） */
+static bool g_have_view;
+
+static void set_page_visible(cdt_page_t page)
+{
+    lv_obj_t *roots[6] = { NULL }; /* 以 cdt_page_t 枚举值索引 */
+
+    roots[CDT_PAGE_NOW] = cdt_ui_now_root();
+    roots[CDT_PAGE_AGENTS] = cdt_ui_agents_root();
+    roots[CDT_PAGE_PLAN] = cdt_ui_plan_root();
+    roots[CDT_PAGE_USAGE] = cdt_ui_usage_root();
+    roots[CDT_PAGE_LOW_BATTERY] = cdt_ui_lowbat_root();
+
+    if (page <= CDT_PAGE_INVALID || page > CDT_PAGE_LOW_BATTERY) {
+        page = CDT_PAGE_NOW; /* 防御 */
+    }
+    for (int i = 1; i <= CDT_PAGE_LOW_BATTERY; i++) {
+        lv_obj_t *r = roots[i];
+        if (r == NULL) continue;
+        if ((cdt_page_t)i == page) lv_obj_remove_flag(r, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 void cdt_ui_init(void)
 {
@@ -21,22 +49,66 @@ void cdt_ui_init(void)
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
     cdt_ui_now_create();
+    cdt_ui_agents_create();
+    cdt_ui_plan_create();
+    cdt_ui_usage_create();
+    cdt_ui_lowbat_create();
+
+    cdt_nav_init(&g_nav, CDT_PAGE_NOW);
+    g_have_view = false;
+    set_page_visible(CDT_PAGE_NOW);
+}
+
+void cdt_ui_apply_nav(const cdt_view_t *view, const cdt_nav_t *nav)
+{
+    if (view == NULL) return;
+
+    g_last_view = *view;
+    g_have_view = true;
+    if (nav != NULL) g_nav = *nav;
+    cdt_nav_clamp(&g_nav, view);
+
+    set_page_visible(view->page);
+    switch (view->page) {
+        case CDT_PAGE_AGENTS:
+            cdt_ui_agents_apply(view, &g_nav);
+            break;
+        case CDT_PAGE_PLAN:
+            cdt_ui_plan_apply(view, &g_nav);
+            break;
+        case CDT_PAGE_USAGE:
+            cdt_ui_usage_apply(view);
+            break;
+        case CDT_PAGE_LOW_BATTERY:
+            cdt_ui_lowbat_apply(view);
+            break;
+        default: /* NOW 与防御路径 */
+            cdt_ui_now_apply(view);
+            break;
+    }
 }
 
 void cdt_ui_apply(const cdt_view_t *view)
 {
-    if (view == NULL) return;
-    cdt_ui_now_apply(view);
+    cdt_ui_apply_nav(view, NULL); /* 用缓存导航 */
 }
 
-void cdt_ui_key(cdt_key_event_t ev)
+cdt_page_t cdt_ui_nav_page(void)
 {
-    /* P2.1 桩：仅 NOW 单页。
-     * - 短按：四页轮换 NOW→AGENTS→PLAN→USAGE（P2.2，需 Runtime.selected_page）；
-     * - 长按：翻转当前提醒静音位（P2.2，需写 DeviceRuntime.muted_attention_id；
-     *   ACK 只表示本地静音，绝不等于批准 Codex 操作）。
-     * 此处不持有 Runtime，也不允许 UI 直接改业务状态——接线在 P2.2 经宿主注入。 */
-    (void)ev;
+    return g_nav.page;
+}
+
+uint32_t cdt_ui_key(cdt_key_event_t ev)
+{
+    uint32_t act;
+
+    act = cdt_nav_key(&g_nav, g_have_view ? &g_last_view : NULL, ev);
+    if (g_have_view) {
+        cdt_ui_apply_nav(&g_last_view, &g_nav); /* 立即重渲染（子页推进/静音标签） */
+    }
+    /* 宿主据 act 把 g_nav.page（cdt_ui_nav_page()）写回 runtime.selected_page、
+     * 记录静音；下轮 present+apply 收敛。 */
+    return act;
 }
 
 void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
