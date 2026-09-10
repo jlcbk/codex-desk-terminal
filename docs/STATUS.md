@@ -36,6 +36,14 @@
 | P3.4（host 阶段） | A4-B（子代理×2：中断+续作） | done | P0.5+P1.4（done） | （本次提交） | `sh scripts/build_transport_tests.sh`（A0 复跑 97 PASS+CRC 4/4+门禁 exit 0）；`run_loopback.py`（A0 复跑全过，18/18，cmp 4 组逐字节一致） | shared/transport/{crc32,fragmenter,reassembler}、bridge/transports/ble/、tests/transport/ble/、scripts/build_transport_tests.sh、artifacts/transport/ble/ | 五项契约偏差处置合理（异 id 中途片=CONTEXT_MISMATCH、超时语义差记录不改、ACK 超时常量归适配器层、按名发现→B2 改 UUID 过滤、证据目录参数化）；B0-B5 真机取证清单内嵌 |
 | P3.5 | A4+A5（子代理） | doing | P3.3+P3.4（done） | - | - | tests/transport/integration/（进行中） | 真机项后置 |
 
+## P4：真机显示、电池与输入（进行中——板 1301 在手，2026-09-10 用户确认）
+
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| P4.1a | A3（子代理） | done | P0.1/P0.3 | （已提交） | `idf.py --version`=5.5.5、vendor HEAD=eb1f634、03_ADC_Test 构建零编译警告（A0 三项复核实测吻合） | scripts/vendor_waveshare.sh、artifacts/idf/（13 件） | VERSIONS 已回填 IDF 双 ID（tag ff1bac0/commit b774170f，P4.1a 发现并经 A0 核实）；磁盘余 25Gi |
+| P4.1b | A3（子代理） | done | 板在位 | （备份不入库） | `shasum -a 256`（A0 独立复核 54afe421… 吻合）；独立复读头 4KB cmp 一致 | artifacts/board/backup-20260910-2328/（16MB 全量+README+恢复命令） | ESP32-S3 rev v0.2/N16R8 确认；恢复命令已记录未执行（按授权纪律） |
+| P4.1c | A3（子代理） | done | P4.1a+P4.1b | （产物不入库） | `idf.py flash` 3 次全 Hash verified；monitor 80s+30s；A0 抽查 boot.log 五项核验吻合（电压一手核实 4.131-4.143V） | artifacts/board/p41c-{boot,boot-2nd,flash1-3}.log、p41c-summary.md | **P4.1 收官**：无 boot loop、三烧不砖；PCB 修订仍需丝印目检（维持 unverified） |
+
 ## P5：低功耗和低压保护（逻辑部分先行）
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
@@ -70,4 +78,4 @@ P2.4 集成+P2.5 验收明细（A0 复跑全绿，2026-09-10）：
 - 本机无 Homebrew：cmake/SDL2 获取方案已定（docs/VERSIONS.md「宿主缺口」节），在 P1.3 执行。
 - codex CLI 0.152.0 在机，app-server 带协议生成命令（P0.2 使用）。
 - 同板参考项目 /Users/cui/Documents/Projects/hermes-courier（2026-09-09 收官，官方 demo 已 vendor），只读引用，不复制其固件代码。
-- ESP32-S3-RLCD-4.2 真机是否在手未确认：P4 起需要硬件，届时向用户确认。
+- ESP32-S3-RLCD-4.2 真机在手（板号 1301，/dev/cu.usbmodem1301），2026-09-10 起硬件阶段解锁；16MB 备份为板上固件恢复凭证。
