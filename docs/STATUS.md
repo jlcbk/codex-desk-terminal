@@ -4,6 +4,12 @@
 
 约定：done 必须附证据路径与可复现命令；未验证的项不得标 done；硬件相关项在无真机实测时标"未验证"说明。
 
+## Z：ZCode 适配（新线，依据 docs/P3.6_DESKTOP_OBSERVATION.md）
+
+| ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
+|---|---|---|---|---|---|---|---|
+| Z1-Z6 前置核验 | A0（主会话） | done | P3.6 结论 | （本次提交） | 本机实测：rollout/metadata 逐字段解析、157 个 agent metadata status 枚举、OpenViking hook 脚本反推 stdin 字段、官方插件文档核对事件清单；dump hook 已装工作区（`.zcode/config.json`+`scripts/zcode_hook_dump.py`） | docs/P3.6_DESKTOP_OBSERVATION.md §7/§7.1、artifacts/zcode_hooks/dump.jsonl（下次新会话开始积累） | Z2 精确 stdin schema 待新会话 dump 采样（不阻塞开发：hook 只当触发器，真源=rollout）；ZCode 源为新增线，协议 source.kind 需扩 `zcode_observed`（zcode.py 任务处置） |
+
 ## P0：事实确认与契约冻结
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
