@@ -7,7 +7,8 @@
  * 启动序列（DEVELOPMENT_PLAN §7.3 BOOT_CHECK 语义）：
  *   显示/初始化 → battery init → 首批采样 → Power FSM BOOT_CHECK
  *   （健康电压 → ALLOW_RADIO_START）→ WiFi STA（dev_net）→ WSS（cdt_wss_client）
- *   → on_text（capacity-1 收件槽）→ StateStore（单解析任务语义）→
+ *   → on_text（R4 收件槽：capacity-1 普通槽 + capacity-1 优先提醒槽，
+ *   互斥短临界区交接、消费者独享缓冲解析）→ StateStore（单解析任务语义）→
  *   presenter（Runtime：battery FSM 状态 / link_state / selected_page / 静音）
  *   → ui_apply。
  *
@@ -65,6 +66,8 @@
 #define CDT_HAS_NET_CONFIG 1
 #endif
 
+#include "app_inbox.h"        /* R4：收件槽跨任务所有权 + 优先提醒槽 */
+#include "app_power_policy.h" /* R3a/R3b：电源动作分发策略（宿主测试单源） */
 #include "cdt_battery.h"
 #include "cdt_key.h"
 #include "cdt_nav.h"
@@ -105,8 +108,8 @@ uint32_t cdt_crc32(const uint8_t *data, size_t len);
 #define WIFI_WAIT_IP_MS 15000          /* WiFi 取 IP 后再起 WSS（超时也起，靠退避） */
 
 /* ------------------------------------------------------------------ */
-/* 大对象静态化（不占任务栈；store 内含 2×17KiB scratch）。store 与收件槽  */
-/* 总 ~50KiB，内部 DRAM 全量构建放不下 → PSRAM 静态区                    */
+/* 大对象静态化（不占任务栈；store 内含 2×17KiB scratch）。store ~34KiB + */
+/* 收件槽三缓冲 3×16KiB（普通/优先/消费者独享，R4）→ PSRAM 静态区         */
 /* （CONFIG_SPIRAM_ALLOW_BSS_IN_PSRAM；LVGL 绘制缓冲仍留内部 DRAM）。     */
 /* ------------------------------------------------------------------ */
 EXT_RAM_BSS_ATTR static cdt_state_store_t s_store;   /* AppState 整包替换（单解析任务=本任务） */
@@ -115,15 +118,15 @@ static cdt_view_t s_view;
 static cdt_nav_t s_nav;
 static cdt_power_fsm_t s_fsm;
 
-/* capacity-1 快照收件槽（§5：最新覆盖旧普通快照；丢弃必须计数） */
-EXT_RAM_BSS_ATTR static uint8_t s_inbox[CDT_WSS_MAX_DOWNLINK];
-static volatile size_t s_inbox_len;
-static volatile bool s_inbox_pending;
-static volatile uint32_t s_inbox_dropped;
+/* capacity-1 普通槽 + capacity-1 优先提醒槽 + 消费者独享解析缓冲（R4）。
+ * 所有权与锁语义见 app_inbox.h；本文件只持有消费者缓冲——app_inbox_take 在
+ * 短临界区内把槽内容复制进来，CRC/JSON 解析在锁外对本缓冲进行（审核 R4）。 */
+EXT_RAM_BSS_ATTR static uint8_t s_inbox_cons[APP_INBOX_MSG_MAX];
 
 /* WSS 链路镜像（on_link 在 wss 任务上下文，只写 volatile + 日志） */
 static volatile cdt_wss_link_state_t s_wss_state = CDT_WSS_LINK_DISCONNECTED;
 static volatile cdt_wss_failure_t s_wss_fail = CDT_WSS_FAIL_NONE;
+static volatile uint32_t s_wss_connected_ms; /* 进入 CONNECTED 的单调 ms（0=未连接）；R4 新鲜度重同步用 */
 
 /* battery / link 状态 */
 static cdt_power_sample_t s_last_sample;
@@ -139,7 +142,11 @@ static char s_muted_turn[CDT_MAX_ID_BYTES + 1];
 
 static QueueHandle_t s_key_queue;
 static bool s_radio_started;
-static uint32_t s_req_seq; /* 诊断：WSS 收帧计数 */
+
+/* R3a：睡眠请求锁存——power_handle_actions 置位，调用点检查后执行
+ * do_sleep_sequence（真机不返回）。启动（BOOT_CHECK）与运行时共用同一条
+ * 「FSM 动作 → 锁存 → 执行」路径，一次性局部 bool 不再丢失睡眠请求。 */
+static volatile bool s_sleep_latched;
 
 /* ------------------------------------------------------------------ */
 /* 墙钟助手                                                              */
@@ -165,16 +172,9 @@ static void key_cb(void *user, cdt_key_hw_event_t ev)
 static void wss_on_text(void *user, const uint8_t *bytes, size_t len)
 {
     (void)user;
-    if (len == 0 || len > CDT_WSS_MAX_DOWNLINK) {
-        return; /* 聚合组件已保证 ≤16KiB；防御 */
-    }
-    memcpy(s_inbox, bytes, len);
-    s_inbox_len = len;
-    if (s_inbox_pending) {
-        s_inbox_dropped++; /* capacity-1 槽覆盖计数（§5 超预算必须计数） */
-    }
-    s_inbox_pending = true;
-    s_req_seq++;
+    /* R4：wss 任务上下文只做「互斥短临界区入槽」（app_inbox_produce 内完成
+     * 优先判定+复制+计数），不再与主任务无锁共享同一缓冲。 */
+    app_inbox_produce(bytes, len);
 }
 
 /* WSS 链路状态名（日志用；cdt_wss_client.h 未提供，本地映射） */
@@ -196,6 +196,11 @@ static void wss_on_link(void *user, cdt_wss_link_state_t st,
     (void)user;
     s_wss_state = st;
     s_wss_fail = f;
+    if (st == CDT_WSS_LINK_CONNECTED) {
+        s_wss_connected_ms = (uint32_t)(esp_timer_get_time() / 1000LL);
+    } else {
+        s_wss_connected_ms = 0; /* 离开连接态：重同步观察窗重新起算 */
+    }
     if (f == CDT_WSS_FAIL_NONE) {
         ESP_LOGI(TAG, "[wss] link=%s detail=%d", wss_state_name(st), detail);
     } else {
@@ -334,16 +339,18 @@ static void unmute_if_new_reminder(const cdt_app_state_t *snap)
 
 /* ------------------------------------------------------------------ */
 /* 快照应用（唯一解析任务：StateStore 整包替换）                          */
+/* R4：每轮只取一条（优先槽先出，见 app_inbox_take）；取件=短临界区复制到   */
+/* 消费者独享缓冲 s_inbox_cons，CRC/JSON 解析在锁外进行，解析期间不持锁、   */
+/* 不关中断。两条消息天然各得一次渲染窗口（提醒先于后续终态上屏）。         */
 /* ------------------------------------------------------------------ */
 static void handle_inbox(int64_t now, bool *need_render)
 {
-    if (!s_inbox_pending) {
+    size_t len = 0;
+    if (!app_inbox_take(s_inbox_cons, sizeof s_inbox_cons, &len)) {
         return;
     }
-    size_t len = s_inbox_len;
-    s_inbox_pending = false;
-    uint32_t crc = cdt_crc32(s_inbox, len);
-    cdt_parse_result_t r = cdt_state_store_apply(&s_store, s_inbox, len);
+    uint32_t crc = cdt_crc32(s_inbox_cons, len);
+    cdt_parse_result_t r = cdt_state_store_apply(&s_store, s_inbox_cons, len);
     if (r == CDT_PARSE_OK) {
         s_have_rx = true;
         s_last_rx_ms = (uint32_t)now; /* §4：只在合法新 seq 快照时刷新 last_rx */
@@ -353,13 +360,15 @@ static void handle_inbox(int64_t now, bool *need_render)
                            ? (int)cur->threads[0].attention.pending_count : -1;
         ESP_LOGI(TAG,
                  "[state] applied #%lu seq=%llu epoch=%s bytes=%u crc32=0x%08"
-                 PRIx32 " src=%d stale=%d threads=%u pending0=%d dropped=%lu",
+                 PRIx32 " src=%d stale=%d threads=%u pending0=%d"
+                 " dropped=%lu dropped_prio=%lu",
                  (unsigned long)s_applied_count,
                  (unsigned long long)cur->seq,
                  cur->bridge_epoch, (unsigned)len, crc,
                  (int)cur->source.kind, (int)cur->source.stale,
                  (unsigned)cur->thread_count, pending0,
-                 (unsigned long)s_inbox_dropped);
+                 (unsigned long)app_inbox_dropped_normal(),
+                 (unsigned long)app_inbox_dropped_priority());
         cdt_nav_clamp(&s_nav, &s_view); /* 内容收缩后子页回钳 */
         unmute_if_new_reminder(cur);
         *need_render = true;
@@ -375,6 +384,8 @@ static void handle_inbox(int64_t now, bool *need_render)
 /* ------------------------------------------------------------------ */
 /* Power FSM 动作执行（含 LOW BATTERY 强制页 + §7.3 停止顺序；触发需真实   */
 /* 电压 ≤3.6V，本任务不人为制造——逻辑接线完整，真机低压验证归 P5）        */
+/* R3a：本函数是启动（BOOT_CHECK）与运行时共用的唯一睡眠执行路径；睡眠请求 */
+/* 经 s_sleep_latched 锁存后到达这里，不依赖一次性的局部 bool。            */
 /* ------------------------------------------------------------------ */
 static void cb_stop_radio(void *user)
 {
@@ -459,8 +470,7 @@ static void do_sleep_sequence(cdt_power_action_t acts)
     /* 真机不返回 */
 }
 
-static void power_handle_actions(cdt_power_action_t acts, int64_t now, bool *need_render,
-                                 bool *sleep_now)
+static void power_handle_actions(cdt_power_action_t acts, int64_t now, bool *need_render)
 {
     if (acts == CDT_POWER_ACT_NONE) {
         return;
@@ -469,9 +479,12 @@ static void power_handle_actions(cdt_power_action_t acts, int64_t now, bool *nee
     ESP_LOGI(TAG, "[power] %s -> %s", cdt_power_state_str(s_fsm.state),
              cdt_power_actions_str(buf, sizeof buf, acts));
 
-    if (acts & (CDT_POWER_ACT_ENTER_CRITICAL | CDT_POWER_ACT_BEGIN_SLEEP_PREP |
-                CDT_POWER_ACT_CONTROLLED_SLEEP)) {
-        *sleep_now = true; /* §7.3：抢占普通任务、取消重连、末帧、深睡 */
+    /* R3a：睡眠请求锁存至执行（掩码单源见 app_power_policy.h；含
+     * DEEP_SLEEP_READY——审核指出旧 dispatcher 不处理该动作）。启动与运行时
+     * 共用本路径；调用点（boot_check/主循环）检查 s_sleep_latched 后调
+     * do_sleep_sequence，一次性局部 bool 不再丢失请求。 */
+    if (app_power_sleep_requested(acts)) {
+        s_sleep_latched = true;
     }
     if (acts & CDT_POWER_ACT_BATTERY_FAULT) {
         ESP_LOGE(TAG, "[power] BATTERY_FAULT（连续 3 次无效样本）：关高功耗活动并提示");
@@ -528,7 +541,10 @@ static bool boot_check(void)
         s_have_sample = true;
         ESP_LOGI(TAG, "[battery] 首批 mv=%u valid=%d", sample.battery_mv, sample.valid);
     } else {
-        memset(&s_last_sample, 0, sizeof s_last_sample);
+        /* R3b：首批失败同样以「当前时间、valid=false」进 FSM（审核：不得把
+         * 旧样本/零值当有效时间戳复用），故障策略由此推进。 */
+        s_last_sample = app_power_invalid_sample(now);
+        s_have_sample = true;
         ESP_LOGE(TAG, "[battery] 首批采样失败: %s（invalid 样本喂 FSM 故障策略）",
                  esp_err_to_name(err));
     }
@@ -537,11 +553,19 @@ static bool boot_check(void)
         .sample = s_last_sample,
     };
     cdt_power_action_t acts = cdt_power_step(&s_fsm, &in, now);
-    bool sleep_now = false;
     bool need_render = false;
-    power_handle_actions(acts, now, &need_render, &sleep_now);
+    power_handle_actions(acts, now, &need_render);
 
-    bool healthy = (acts & CDT_POWER_ACT_ALLOW_RADIO_START) != 0 && !sleep_now;
+    /* R3a：BOOT_CHECK 收到睡眠动作（低压唤醒 recovery 不满足 → SLEEP_PREP，
+     * DEVELOPMENT_PLAN §7.3 BOOT_CHECK 行）必须真实执行——审核指出旧代码只把
+     * 动作用于计算允许无线的 bool，一次性动作被丢弃，设备继续主循环不睡。
+     * 显示已初始化（app_task 先 render "boot"），do_sleep_sequence 落末帧后
+     * 深睡，真机不返回。 */
+    if (s_sleep_latched) {
+        do_sleep_sequence(acts);
+    }
+
+    bool healthy = (acts & CDT_POWER_ACT_ALLOW_RADIO_START) != 0 && !s_sleep_latched;
     ESP_LOGI(TAG, "[power] BOOT_CHECK 判定 -> %s（电压 %s）",
              healthy ? "允许无线" : "受限/拒无线",
              (s_have_sample && s_last_sample.valid) ? "有效" : "无效");
@@ -552,6 +576,11 @@ static bool boot_check(void)
 /* 无线启动：WiFi STA → 等 IP → WSS（冻结退避由 cdt_wss_client 驱动）     */
 /* ------------------------------------------------------------------ */
 #if CDT_HAS_NET_CONFIG
+/* R4 新鲜度重同步用的 WSS 配置副本（浅拷贝；uri/pin/ca/token 均为静态存储，
+ * 生命周期覆盖 stop→start）。 */
+static cdt_wss_config_t s_wss_cfg;
+static uint32_t s_last_resync_ms; /* 上次重同步单调 ms（节流 = LINK_DEAD_MS） */
+
 static void hex_to_pin(const char *hex, uint8_t out[32])
 {
     memset(out, 0, 32);
@@ -600,7 +629,7 @@ static void start_radio(void)
     cdt_wss_token_fingerprint8(token, fp);
     ESP_LOGI(TAG, "[wss] 连接 %s（token 指纹 %s…，CA 验链 + SPKI pin）", uri, fp);
 
-    cdt_wss_config_t wcfg = {
+    s_wss_cfg = (cdt_wss_config_t){
         .user = NULL,
         .on_text = wss_on_text,
         .on_link = wss_on_link,
@@ -611,9 +640,39 @@ static void start_radio(void)
         .buffer_size = 0,     /* 默认 2048 */
         .allow_insecure_ws = false, /* 生产红线：明文禁用（§5.1） */
     };
-    err = cdt_wss_start(&wcfg);
+    err = cdt_wss_start(&s_wss_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WSS 启动失败: %s", esp_err_to_name(err));
+    }
+}
+
+/* R4 新鲜度重同步：受控的主动 stop/start 一次。
+ * 契约：INTERFACES §4「150秒无更新可标disconnected并重连」「收到相同seq的
+ * 重复数据不能让旧状态永远新鲜」、§6「主机恢复后请求/接收最新全量」。
+ * 审核条目：ARCHITECTURE_REVIEW_2026-09-11 R4（新鲜度重同步，不能只改显示）。
+ * 触发域（app 主循环 link_check_and_resync）：仅限「wss 链路 CONNECTED（TCP/
+ * TLS 健康，ping/pong 正常）但业务停摆 ≥LINK_DEAD_MS 无合法新快照」——transport
+ * 自身断开/退避由 cdt_wss_client 冻结退避自愈（重连后 Bridge 重发全量，§6）；
+ * CONFIG_ERROR 终态不重试（§5.4，等 cdt_wss_config_error_clear）。重同步即
+ * stop/start：重置退避与聚合缓冲，重连后从握手 epoch 拿全量快照。 */
+static void wss_resync(void)
+{
+    esp_err_t st = cdt_wss_stop();
+    if (st == ESP_ERR_INVALID_STATE) {
+        /* 未在运行：直接尝试重启（组件已自行退出时兜底） */
+    } else if (st != ESP_OK) {
+        /* stop 超时（≤6s 兜底未退出）：不再叠加第二个客户端任务，链路如实
+         * 显示 DISCONNECTED，等下一观察窗再试。 */
+        ESP_LOGE(TAG, "[resync] wss stop 失败: %s（本轮放弃，链路按断开显示）",
+                 esp_err_to_name(st));
+        return;
+    }
+    ESP_LOGW(TAG, "[resync] 业务停摆 ≥%ums 且链路健康 → wss stop/start 全量重同步",
+             (unsigned)LINK_DEAD_MS);
+    esp_err_t sr = cdt_wss_start(&s_wss_cfg);
+    if (sr != ESP_OK) {
+        ESP_LOGE(TAG, "[resync] wss start 失败: %s（链路按 DISCONNECTED 显示）",
+                 esp_err_to_name(sr));
     }
 }
 #endif /* CDT_HAS_NET_CONFIG */
@@ -674,12 +733,14 @@ static void app_task(void *arg)
         /* 快照收件槽 → StateStore（唯一解析任务） */
         handle_inbox(now, &need_render);
 
-        /* 电池采样调度：10s 常规 / 1Hz 近阈值（§7.1） */
+        /* 电池采样调度：10s 常规 / 1Hz 近阈值（§7.1；故障宽限期 1Hz 给恢复
+         * 机会——R3b：invalid 样本必须能以合法节奏持续进 FSM） */
         bool fast = cdt_battery_should_sample_fast(
                         (s_have_sample && s_last_sample.valid) ? s_last_sample.battery_mv : 0) ||
                     s_fsm.state == CDT_POWER_LOW_WARN ||
                     s_fsm.state == CDT_POWER_CRITICAL ||
-                    s_fsm.state == CDT_POWER_SLEEP_PREP;
+                    s_fsm.state == CDT_POWER_SLEEP_PREP ||
+                    s_fsm.battery_fault;
         int64_t period = fast ? BATTERY_PERIOD_FAST_MS : BATTERY_PERIOD_NORMAL_MS;
         if (last_sample < 0 || now - last_sample >= period) {
             last_sample = now;
@@ -696,6 +757,17 @@ static void app_task(void *arg)
                     need_render = true; /* 电压上屏刷新 */
                 }
             } else {
+                /* R3b：整批失败必须以「当前时间、valid=false」样本进 FSM——
+                 * 绝不把旧 valid 样本当新值复用（审核：旧代码失败分支仍送旧
+                 * s_last_sample，invalid_streak 不推进、保护失效、UI 反复显示
+                 * 旧健康电压）。s_last_sample 转为 invalid → runtime.battery_
+                 * valid=false → presenter 电压位 "--"。恢复由下一批 ESP_OK。 */
+                bool was_valid = s_have_sample && s_last_sample.valid;
+                s_last_sample = app_power_invalid_sample(now);
+                s_have_sample = true;
+                if (was_valid) {
+                    need_render = true; /* valid → unknown 转换上屏 */
+                }
                 ESP_LOGE(TAG, "[battery] 采样失败: %s（整批按 invalid 喂 FSM）",
                          esp_err_to_name(serr));
             }
@@ -704,10 +776,9 @@ static void app_task(void *arg)
                 .sample = s_last_sample,
             };
             cdt_power_action_t acts = cdt_power_step(&s_fsm, &in, now);
-            bool sleep_now = false;
-            power_handle_actions(acts, now, &need_render, &sleep_now);
-            if (sleep_now) {
-                do_sleep_sequence(acts); /* 真机不返回 */
+            power_handle_actions(acts, now, &need_render);
+            if (s_sleep_latched) {
+                do_sleep_sequence(acts); /* R3a：锁存即执行；真机不返回 */
             }
         }
 
@@ -731,6 +802,22 @@ static void app_task(void *arg)
             need_render = true;
         }
 
+#if CDT_HAS_NET_CONFIG
+        /* R4 新鲜度重同步（契约 INTERFACES §4/§6，审核 R4）：wss 链路 CONNECTED
+         * （TCP/TLS 健康）但 ≥LINK_DEAD_MS 无合法新快照（含从未收到）→ 受控
+         * stop/start 全量重同步，不是只改显示。transport 断开/退避由组件冻结
+         * 退避自愈；CONFIG_ERROR 终态不在触发域。LINK_DEAD_MS 节流防高频。 */
+        if (s_radio_started && s_wss_state == CDT_WSS_LINK_CONNECTED &&
+            s_wss_connected_ms != 0 &&
+            (uint32_t)(now - (int64_t)s_wss_connected_ms) >= LINK_DEAD_MS &&
+            now - (int64_t)s_last_resync_ms >= (int64_t)LINK_DEAD_MS &&
+            link == CDT_LINK_DISCONNECTED) {
+            s_last_resync_ms = (uint32_t)now;
+            wss_resync();
+            need_render = true;
+        }
+#endif
+
         /* 渲染：事件驱动 + 1Hz 兜底（电压/时长推进） */
         if (need_render || now - last_render >= RENDER_PERIOD_MS) {
             last_render = now;
@@ -750,6 +837,9 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    /* R4：收件槽锁必须在任何 on_text 回调（cdt_wss_start）之前就绪 */
+    app_inbox_init();
 
     s_key_queue = xQueueCreate(4, sizeof(cdt_key_event_t));
     cdt_key_config_t kcfg = {

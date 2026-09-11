@@ -42,6 +42,17 @@ const char *dev_net_state_name(dev_net_state_t st)
     }
 }
 
+/* P5.2 前半：PS 模式名（仅日志用） */
+static const char *ps_mode_name(wifi_ps_type_t ps)
+{
+    switch (ps) {
+    case WIFI_PS_NONE:     return "NONE";
+    case WIFI_PS_MIN_MODEM: return "MIN_MODEM";
+    case WIFI_PS_MAX_MODEM: return "MAX_MODEM";
+    default:               return "INVALID";
+    }
+}
+
 static void set_state(dev_net_state_t st)
 {
     if (s_state != st) {
@@ -104,6 +115,23 @@ esp_err_t dev_net_start(const char *ssid, const char *pass)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_LOGI(TAG, "连接 SSID=\"%s\"（密码不落日志）", ssid);
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* P5.2 前半（连接稳定性）：省电模式显式化——IDF 默认 MIN_MODEM 不再隐式。
+     * A/B 结论见 artifacts/board/p52/report.md；CONNECTED_IDLE 的 modem-sleep
+     * 精细联动（PM 锁/显示联动）归 P5.2 后半，功耗实测归 P6.1 仪器。 */
+    wifi_ps_type_t ps = WIFI_PS_MIN_MODEM;
+#if CONFIG_CDT_WIFI_PS_MODE == 0
+    ps = WIFI_PS_NONE;
+#elif CONFIG_CDT_WIFI_PS_MODE == 2
+    ps = WIFI_PS_MAX_MODEM;
+#endif
+    esp_err_t ps_err = esp_wifi_set_ps(ps);
+    wifi_ps_type_t ps_now = WIFI_PS_NONE; /* get 回读失败时日志显示 rc；-1 兜底不可行，用 NONE 占位 */
+    esp_err_t get_err = esp_wifi_get_ps(&ps_now);
+    ESP_LOGI(TAG, "WiFi PS 模式 set=%s(rc=%s) get=%s(rc=%s)（睡眠时长未测，归 P6.1）",
+             ps_mode_name(ps), esp_err_to_name(ps_err),
+             ps_mode_name(ps_now), esp_err_to_name(get_err));
+
     s_started = true;
     s_ip_str[0] = '\0';
     return ESP_OK;

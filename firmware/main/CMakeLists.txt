@@ -9,6 +9,7 @@
 #     编入会产生重复符号；main.c 按冻结签名本地声明 cdt_crc32 原型（P4.2 先例）。
 idf_component_register(
     SRCS "main.c"
+         "app_inbox.c"
          "dev_net.c"
          "lvgl_port.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/state/cdt_json.c"

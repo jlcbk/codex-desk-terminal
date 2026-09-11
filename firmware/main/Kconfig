@@ -1,0 +1,21 @@
+# CodexDT dev net 配置（P5.2 前半：连接稳定性交付）
+#
+# 背景：整机集成期间 "Wi-Fi 空闲 RX 停滞 → 周期断链" 的根因在 Bridge 侧
+# relay 上游 socket 10s 超时（scripts/bridge_serve_mock.py，已修），设备侧
+# esp_wifi 从未停滞（同证据窗口 ping→pong RTT max 229ms）。本开关只用于
+# A/B 固化 "稳定在线的默认省电配置"，不启用自动 Light Sleep / modem-sleep
+# 精细策略（CONNECTED_IDLE 的精细联动设计归 P5.2 后半 + P6.1 仪器实测）。
+menu "CodexDT dev net (P5.2)"
+
+    config CDT_WIFI_PS_MODE
+        int "WiFi STA 省电模式（0=NONE 1=MIN_MODEM 2=MAX_MODEM）"
+        range 0 2
+        default 1
+        help
+            dev_net_start 在 esp_wifi_start 后调用 esp_wifi_set_ps 应用。
+            IDF 默认即 MIN_MODEM（default 1 = 保持现网行为可对照）。
+            NONE=全时射频在线（稳定优先，功耗未测，归 P6.1）。
+            MAX_MODEM=每 listen_interval 唤醒一次（listen_interval 默认
+            3 beacon，未改），只作 A/B 数据点，不作为默认。
+
+endmenu
