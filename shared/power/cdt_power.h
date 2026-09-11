@@ -43,7 +43,11 @@ typedef struct {
     uint32_t stable_ms;              /* 10000：low_exit / recovery 共用的"稳定 10s" */
     uint32_t final_frame_timeout_ms; /* 1000：末帧最多等 1s，失败也要休眠 */
     /* §7.2 连续定义 / §7.1 故障策略 */
-    uint32_t sample_gap_max_ms;      /* 2000：连续有效样本间隔上限；超限转采样故障检查 */
+    uint32_t sample_gap_max_ms;      /* 2000：连续有效样本间隔上限；仅在临界
+                                        低压累计期（1Hz 快采、连续性计时在跑）
+                                        作为缺测判据执行（见 cdt_power.c
+                                        handle_valid_sample 头注释），常规 10s
+                                        节奏不触发 */
     uint8_t  fault_fail_count;       /* 3：连续 3 次无效样本 → BATTERY_FAULT */
     uint32_t fault_grace_ms;         /* 10000：故障 10s 不可恢复 → 受控休眠 */
     /* §7.1 电压有效范围初值 2500–4500mV；范围外按 unknown/失败样本计 */
@@ -116,7 +120,10 @@ typedef uint32_t cdt_power_action_t;
 #define CDT_POWER_ACT_BLOCK_RADIO_START         ((cdt_power_action_t)1u << 9)
 /* 健康启动或 recovery（≥recovery_mv 稳定 10s）通过：允许启动无线 */
 #define CDT_POWER_ACT_ALLOW_RADIO_START         ((cdt_power_action_t)1u << 10)
-/* §7.2 连续有效样本间隔 >2s：持续低压计时重置、转采样故障检查（缺测不计入）*/
+/* §7.2 连续有效样本间隔 >2s：持续低压计时重置、转采样故障检查（缺测不计入）。
+ * 执行域 = 临界低压累计期（连续性计时在跑、§7.1 1Hz 快采）；常规 10s 节奏
+ * 不触发（A4 断连重连修复任务语义修正 2026-09-11，真机回归证据见
+ * cdt_power.c handle_valid_sample 头注释）。 */
 #define CDT_POWER_ACT_SAMPLE_GAP_RESET          ((cdt_power_action_t)1u << 11)
 /* 占位动作（§7.3 三态进入条件本任务只落状态；无线策略实测归 P5.2）*/
 #define CDT_POWER_ACT_ENTER_ACTIVE              ((cdt_power_action_t)1u << 12)

@@ -176,6 +176,8 @@ typedef struct {
     volatile int  close_code_pending;/* 聚合超限 → 由任务发 close 1009（§5.3） */
     int64_t connected_since_ms;
     cdt_wss_failure_t last_failure;
+    bool last_failure_terminal;      /* 本轮已见终态分类（401/403/CERT_PIN）：
+                                        其后的 DISCONNECTED 事件不得覆盖 */
     int last_detail;
     bool was_connected;
 } wss_ctrl_t;
@@ -279,11 +281,17 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
 
     case WEBSOCKET_EVENT_DISCONNECTED: {
         /* §5.3：1008 → CONFIG_ERROR；1000/1006/1009/1011/未列明 → 可重试。
-         * close_status_code=0（无 close frame 的异常断链）按 1006 语义。 */
+         * close_status_code=0（无 close frame 的异常断链）按 1006 语义。
+         * 整机集成 A4 断连重连修复（真机 2026-09-11）：库在 ERROR 事件之后必跟
+         * abort→DISCONNECTED（close=0），若这里无条件覆盖 last_failure，会把
+         * ERROR 事件刚定下的终态分类（401/403/CERT_PIN）洗成可重试——§5.4
+         * 终态"禁高频无限重试"随之失效。故终态已定时本事件只补充 detail。 */
         int code = e ? e->close_status_code : 0;
-        s_ctl.last_failure = (code == CDT_WSS_CLOSE_POLICY)
-                                 ? CDT_WSS_FAIL_AUTH_LOST_1008
-                                 : CDT_WSS_FAIL_RETRYABLE;
+        if (!s_ctl.last_failure_terminal) {
+            s_ctl.last_failure = (code == CDT_WSS_CLOSE_POLICY)
+                                     ? CDT_WSS_FAIL_AUTH_LOST_1008
+                                     : CDT_WSS_FAIL_RETRYABLE;
+        }
         s_ctl.last_detail = code;
         ESP_LOGW(TAG, "断开 close=%d classified=%s", code,
                  cdt_wss_failure_name(s_ctl.last_failure));
@@ -296,22 +304,38 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         int status = eh ? eh->esp_ws_handshake_status_code : 0;
         int last_err = eh ? eh->esp_tls_last_esp_err : 0;
         cdt_wss_failure_t f = CDT_WSS_FAIL_RETRYABLE;
-        /* 整机集成（A3+A4）W5 真机修复：仅握手阶段（无 TCP_CLOSED_FIN）且带
-         * 证书验证 flags 才判 CERT_PIN——连接中读 EOF 时 error_handle 会残留
-         * 非 0 flags，原先误判为 CONFIG_ERROR 终态、设备从此不再重连。 */
+        /* 整机集成 A4 断连重连修复（真机 2026-09-11，证据
+         * artifacts/board/integration/a4-reconnect/p1_boot_baseline.log）：
+         * esp_websocket_client 1.8.0 的 dispatch 只在 error_type ==
+         * TCP_TRANSPORT 时才从 transport 搬运 esp_tls_* 字段；而"已连接后被
+         * 服务端断链（TCP FIN）"路径先发 ERROR（此刻 error_type 仍为 NONE）、
+         * 后发 abort——event_data.error_handle 的 esp_tls_last_esp_err /
+         * esp_tls_cert_verify_flags 是**未初始化栈值**（实测 last_esp_err=0、
+         * flags≠0 残渣）。旧逻辑据 flags≠0 误判 CERT_PIN 终态闩锁，设备从此
+         * 沉默不重连；上一轮"last_err==TCP_CLOSED_FIN→retryable"修复因
+         * last_esp_err 是栈值 0 而永假。分类改为两步：
+         *   ①握手响应码 401/403 可信（库在 connect 失败路径显式写入，每轮
+         *     dispatch 恒搬运）→ 终态；
+         *   ②CERT_PIN 仅在**握手阶段**（本轮 CONNECTED 未发生，was_connected
+         *     ==false）且字段确系本轮 transport 新鲜搬运（error_type ==
+         *     TCP_TRANSPORT，非栈残渣）且 flags≠0 时成立——证书校验只可能
+         *     发生在握手期，已连接后的任何 ERROR 一律可重试。真证书失配在
+         *     首轮按可重试多退避一次，第二轮起 error_type 遗留为
+         *     TCP_TRANSPORT、transport 错误为本轮新鲜值 → 终态成立。 */
         if (status == 401) {
             f = CDT_WSS_FAIL_AUTH_401;
         } else if (status == 403) {
             f = CDT_WSS_FAIL_POLICY_403;
-        } else if (last_err == ESP_ERR_ESP_TLS_TCP_CLOSED_FIN) {
-            f = CDT_WSS_FAIL_RETRYABLE; /* 服务端关闭：按 1006/1000 语义可重试 */
-        } else if (eh != NULL && eh->esp_tls_cert_verify_flags != 0) {
-            f = CDT_WSS_FAIL_CERT_PIN;
         } else if (eh != NULL &&
-                   eh->error_type == WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT) {
-            f = CDT_WSS_FAIL_RETRYABLE; /* pong 超时按 1006 语义（§5.2 第 5 步） */
+                   eh->error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT &&
+                   !s_ctl.was_connected &&
+                   eh->esp_tls_cert_verify_flags != 0) {
+            f = CDT_WSS_FAIL_CERT_PIN;
         }
+        /* 其余（PONG 超时按 §5.2 第 5 步 1006 语义、读 EOF/RST、poll 失败等）
+         * 一律可重试，不读取栈残渣字段。 */
         s_ctl.last_failure = f;
+        s_ctl.last_failure_terminal = cdt_wss_failure_is_config_error(f);
         s_ctl.last_detail = status;
         ESP_LOGW(TAG, "错误事件：type=%d handshake_status=%d last_esp_err=%d → %s",
                  eh ? (int)eh->error_type : -1, status, last_err,
@@ -380,6 +404,7 @@ static void connect_once(void)
     s_agg_len = 0;
     s_agg_total = 0;                 /* 旧链路半包丢弃（§5.4） */
     s_ctl.last_failure = CDT_WSS_FAIL_RETRYABLE;
+    s_ctl.last_failure_terminal = false;
     s_ctl.last_detail = 0;
     s_ctl.close_code_pending = 0;
     s_ctl.was_connected = false;

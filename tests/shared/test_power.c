@@ -11,6 +11,11 @@
  *   短低压后恢复            → test_short_low_then_recover           (§7.2 连续定义+low_exit)
  *   反弹                    → test_rebound_after_critical_latched   (§7.2 锁存)
  *   缺测                    → test_sample_gap_over_2s               (§7.2 间隔≤2s)
+ *   常规 10s 节奏非缺测（补充）→ test_sample_gap_normal_cadence_no_reset
+ *                                          (§7.2 2s 规则执行域=连续性计时在跑；
+ *                                           A4 断连重连修复任务 2026-09-11)
+ *   计时在跑时 2s 规则仍生效（补充）→ test_sample_gap_armed_timer_still_fires
+ *                                          (§7.2 crit/lowexit 累计期 1Hz 缺测)
  *   ADC错误                 → test_adc_fault_3_errors_controlled_sleep (§7.1 故障)
  *   低压冷启动（补充）      → test_boot_low_wake_radio_gate         (§7.3 BOOT_CHECK)
  *   recovery 稳定 10s（补充）→ test_recovery_3700_stable_10s        (§7.2 recovery_mv)
@@ -276,8 +281,91 @@ static void test_rebound_after_critical_latched(void)
 
 /* ---------- §8：缺测（§7.2 连续有效样本间隔 ≤2s，缺测不计入持续低压）---------- */
 
-static void test_sample_gap_over_2s(void)
+/* A4 断连重连修复任务（2026-09-11）语义补充：§7.2 的 2s 间隔规则是临界持续
+ * 低压累计期（§7.1 1Hz 快采）的连续性判据，执行域 = 连续性计时在跑；
+ * 常规 10s 节奏（远离阈值、无计时在跑）不是缺测，ACTIVE 常规模式不得触发。 */
+
+static void test_sample_gap_normal_cadence_no_reset(void)
 {
+    cdt_power_fsm_t f;
+    cdt_power_input_t in;
+    cdt_power_action_t a;
+    char ab[160];
+    int64_t t;
+
+    /* 常规 10s 节奏 × 6 分钟健康电压（§7.1 ACTIVE）：零 SAMPLE_GAP_RESET */
+    fsm_start(&f, false);
+    boot_healthy(&f);
+    for (t = 10000; t <= 360000; t += 10000) {
+        in = smp(4100, t);
+        a = cdt_power_step(&f, &in, t);
+        check(!HAS(a, CDT_POWER_ACT_SAMPLE_GAP_RESET),
+              "常规 10s 节奏健康电压不触发 SAMPLE_GAP_RESET（§7.2 执行域）",
+              cdt_power_actions_str(ab, sizeof(ab), a));
+    }
+    check(f.gap_reset_count == 0 && f.state == CDT_POWER_ACTIVE,
+          "6 分钟 10s 节奏后 gap_reset_count==0 且仍在 ACTIVE", NULL);
+
+    /* 同节奏贴近阈值（≤3750 → 固件将转 1Hz，FSM 已进 LOW_WARN）：
+     * 3700 进 LOW_WARN，未计时在跑的拍同样不得误报 */
+    fsm_start(&f, false);
+    boot_healthy(&f);
+    in = smp(3700, 10000);
+    a = cdt_power_step(&f, &in, 10000);
+    check(HAS(a, CDT_POWER_ACT_ENTER_LOW_WARN) &&
+              !HAS(a, CDT_POWER_ACT_SAMPLE_GAP_RESET),
+          "10s 节奏进 LOW_WARN 的那拍不误报 SAMPLE_GAP_RESET",
+          cdt_power_actions_str(ab, sizeof(ab), a));
+}
+
+static void test_sample_gap_armed_timer_still_fires(void)
+{
+    cdt_power_fsm_t f;
+    cdt_power_input_t in;
+    cdt_power_action_t a;
+    int64_t t;
+
+    /* (a) critical 累计期（3600mV 1Hz，crit_running）：
+     *     恰 2000ms 间隔不算缺测（≤2s 上限，§7.2） */
+    fsm_start(&f, false);
+    boot_healthy(&f);
+    for (t = 1000; t <= 4000; t += 1000) {
+        in = smp(3600, t);
+        (void)cdt_power_step(&f, &in, t);
+    }
+    in = smp(3600, 6000); /* 间隔恰 2000ms */
+    a = cdt_power_step(&f, &in, 6000);
+    check(!HAS(a, CDT_POWER_ACT_SAMPLE_GAP_RESET),
+          "1Hz 累计期恰 2000ms 间隔不触发（≤2s 上限）", NULL);
+
+    /* (b) 同累计期 3000ms 缺测 → 触发且 critical 计时自新样本起算 */
+    in = smp(3600, 9000); /* 间隔 3000ms > 2000ms */
+    a = cdt_power_step(&f, &in, 9000);
+    check(HAS(a, CDT_POWER_ACT_SAMPLE_GAP_RESET),
+          "1Hz 累计期 3s 缺测仍触发 SAMPLE_GAP_RESET（§7.2）", NULL);
+    check(f.crit_start_ms == 9000 && f.gap_reset_count == 1 &&
+              !f.critical_latched,
+          "缺测后 critical 计时自缺测后首样本重新起算", NULL);
+
+    /* (c) LOW_WARN 退出稳定期（lowexit_running，>3750mV 1Hz）3s 缺测 → 触发 */
+    fsm_start(&f, false);
+    boot_healthy(&f);
+    in = smp(3700, 1000); /* ≤3700 进 LOW_WARN */
+    (void)cdt_power_step(&f, &in, 1000);
+    in = smp(3760, 2000); /* >3750 → lowexit 计时启动 */
+    (void)cdt_power_step(&f, &in, 2000);
+    check(f.lowexit_running && f.lowexit_start_ms == 2000,
+          "LOW_WARN 中 >3750mV 启动退出稳定计时", NULL);
+    in = smp(3760, 5000); /* 间隔 3000ms 缺测 */
+    a = cdt_power_step(&f, &in, 5000);
+    check(HAS(a, CDT_POWER_ACT_SAMPLE_GAP_RESET),
+          "退出稳定期 3s 缺测触发重置（稳定窗口不计缺测时间）", NULL);
+    /* 重置后同拍以缺测后首样本重启稳定窗口（>3750 仍成立） */
+    check(f.lowexit_running && f.lowexit_start_ms == 5000,
+          "缺测后退出稳定计时自缺测后首样本重新起算", NULL);
+}
+
+static void test_sample_gap_over_2s(void){
     cdt_power_fsm_t f;
     cdt_power_input_t in;
     cdt_power_action_t a;
@@ -704,6 +792,8 @@ int main(void)
     test_short_low_then_recover();
     test_rebound_after_critical_latched();
     test_sample_gap_over_2s();
+    test_sample_gap_normal_cadence_no_reset();
+    test_sample_gap_armed_timer_still_fires();
     test_adc_fault_3_errors_controlled_sleep();
     test_boot_low_wake_radio_gate();
     test_recovery_3700_stable_10s();

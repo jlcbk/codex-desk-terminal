@@ -211,11 +211,21 @@ static cdt_power_action_t handle_valid_sample(cdt_power_fsm_t *fsm, int32_t mv,
     cdt_power_action_t act = CDT_POWER_ACT_NONE;
     const cdt_power_params_t *p = &fsm->params;
 
-    /* §7.2 连续定义：与上一有效样本间隔须 ≤ sample_gap_max_ms；超限（或乱序）
-     * 转采样故障检查路径：重置全部连续计时，缺测时间不计入持续低压。 */
+    /* §7.2 连续定义（间隔须 ≤ sample_gap_max_ms=2s）是**临界持续低压累计期**
+     * （§7.1 近阈值 1Hz 快采）的连续性判据：仅当任一连续性计时在跑
+     * （crit/lowexit/recov——这些计时只在近阈值区间运行，彼时固件按 §7.1 必为
+     * 1Hz 节奏）时，间隔超限（或乱序）才构成缺测 → 重置连续计时，缺测时间
+     * 不计入持续低压/稳定窗口（§7.2）。
+     * 常规 10s 节奏（§7.1；电压远离阈值、无任何计时在跑）是正常采样节奏而非
+     * 缺测：ACTIVE 常规模式不得触发本动作。真机回归证据（A4 断连重连修复
+     * 任务，2026-09-11）：修复前每 10s 拍误报一次 SAMPLE_GAP_RESET
+     * （artifacts/board/integration/reconnect_test.log）；主机测试
+     * test_sample_gap_normal_cadence_no_reset 钉死该语义。 */
     if (fsm->have_last_valid) {
         int64_t gap = at_ms - fsm->last_valid_at_ms;
-        if (gap < 0 || gap > (int64_t)p->sample_gap_max_ms) {
+        bool continuity_armed = fsm->crit_running || fsm->lowexit_running ||
+                                fsm->recov_running;
+        if (continuity_armed && (gap < 0 || gap > (int64_t)p->sample_gap_max_ms)) {
             act |= CDT_POWER_ACT_SAMPLE_GAP_RESET;
             fsm->gap_reset_count++;
             fsm->crit_running = false;

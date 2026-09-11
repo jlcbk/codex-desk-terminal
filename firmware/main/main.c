@@ -753,9 +753,9 @@ void app_main(void)
 
     s_key_queue = xQueueCreate(4, sizeof(cdt_key_event_t));
     cdt_key_config_t kcfg = {
-        .debounce_ms = 0,    /* §6 初值 30ms */
-        .long_press_ms = 0,  /* §6 初值 800ms */
-        .poll_period_ms = 0, /* 默认 5ms 轮询 */
+        .debounce_ms = 30,   /* §6 初值 30ms（集成期误填 0 导致轮询未启动，A0 修） */
+        .long_press_ms = 800,/* §6 初值 800ms，松开时判定 */
+        .poll_period_ms = 5, /* 5ms 轮询（P4.5 组件默认） */
         .on_event = key_cb,
         .user = NULL,
     };
