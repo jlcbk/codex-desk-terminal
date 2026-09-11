@@ -4,23 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "cdt_font_noto_sc.h"
 #include "cdt_ui_internal.h"
 
-/* ---- 页面字体：Montserrat 14/16 副本 + Noto Sans SC 子集 fallback（P2.4）----
- * 运行期整体拷贝内置字体描述符再挂 fallback，纯数据赋值、确定性；
- * ASCII 字形仍由 Montserrat 提供（逐像素与 P2.1–P2.3 基线一致），CJK 逐字形
- * 回退到子集。F_STATUS（28px 状态词）恒为 ASCII，无需回退。 */
-lv_font_t cdt_uii_font_bar14;
-lv_font_t cdt_uii_font_body16;
-
-void cdt_uii_fonts_init(void)
-{
-    cdt_uii_font_bar14 = lv_font_montserrat_14;
-    cdt_uii_font_bar14.fallback = &cdt_font_noto_sc_14;
-    cdt_uii_font_body16 = lv_font_montserrat_16;
-    cdt_uii_font_body16.fallback = &cdt_font_noto_sc_16;
-}
+/* ---- 页面字体：见 cdt_ui_internal.h F_*（全量 wqy 单字体，无 fallback 层）----
+ * 字体为编译期常量（cdt_font_wqy16 生成的 const lv_font_t，fallback=NULL），
+ * 无运行期初始化；本文件只保留页面共用小工具。 */
 
 lv_obj_t *cdt_uii_label(lv_obj_t *parent, const lv_font_t *font)
 {

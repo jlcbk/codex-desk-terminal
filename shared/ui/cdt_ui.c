@@ -8,7 +8,7 @@
  */
 #include <stdio.h>
 
-#include "cdt_font_noto_sc.h"
+#include "cdt_font_wqy16.h"
 #include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
 #include "cdt_ui_pages.h"
@@ -42,8 +42,8 @@ void cdt_ui_init(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* 页面字体（Montserrat 副本 + SC 子集 fallback）必须先于页面构建 */
-    cdt_uii_fonts_init();
+    /* 页面字体（全量 wqy 单字体，见 cdt_ui_internal.h F_*）为编译期
+     * 常量 lv_font_t，无需运行期初始化；直接构建页面。 */
 
     /* 页面根：白底（I1 索引 1；SDL 驱动 1=白 0=黑），无边框无滚动 */
     lv_obj_set_style_bg_color(scr, lv_color_white(), LV_PART_MAIN);
@@ -116,10 +116,11 @@ uint32_t cdt_ui_key(cdt_key_event_t ev)
 }
 
 /*
- * 显示兜底：ASCII 原样（Montserrat 直渲）；Noto Sans SC 子集已覆盖的码点
- * （CJK/全角标点等，见 cdt_font_noto_sc）按 UTF-8 序列原样放行；其余
- * （emoji、假名、未收字等）每个码点折为一个可见占位符 '?'，不静默缺字
- * （§6）。控制字符折为空格。dst 与 src 可不重叠；dstsz 含结尾 NUL。
+ * 显示兜底（字体栈定稿 2026-09-11：全量 wqy 单字体、无 fallback 字体层）：
+ * wqy BDF 全量收编的码点（CJK 统一+扩展 A+假名+韩文+希腊/西里尔+Latin，
+ * 见 cdt_font_wqy16.c 头注释）按 UTF-8 序列原样放行；wqy 没有的码点
+ * （emoji 等）每个折为一个可见占位符 '?'，不静默缺字（§6）。
+ * 控制字符折为空格。dst 与 src 可不重叠；dstsz 含结尾 NUL。
  */
 void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
 {
@@ -137,7 +138,7 @@ void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
             dst[out++] = ' '; /* 控制字符 → 空格，保护单行布局 */
         }
         else if (b < 0x80u) {
-            dst[out++] = (char)b; /* ASCII 原样（内置 Montserrat 可渲染） */
+            dst[out++] = (char)b; /* ASCII 原样（wqy 点阵自带 Latin 可渲染） */
         }
         else {
             /* 非 ASCII：解码码点，子集已覆盖 → 原样放行整个序列；
@@ -153,7 +154,7 @@ void cdt_ui_ascii_safe(char *dst, size_t dstsz, const char *src)
                     if ((p[i] & 0xC0u) != 0x80u) bad = true;
                     else cp = (cp << 6) | (uint32_t)(p[i] & 0x3Fu);
                 }
-                covered = !bad && cdt_font_noto_sc_covers(cp);
+                covered = !bad && cdt_font_wqy16_covers(cp);
             }
             if (covered) {
                 size_t i;

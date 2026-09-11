@@ -13,7 +13,7 @@ idf_component_register(
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/display/cdt_frame.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/presenter/cdt_presenter.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui.c"
-         "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_font_noto_sc.c"
+         "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_font_wqy16.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_now.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_internal.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_agents.c"

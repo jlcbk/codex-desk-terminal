@@ -19,12 +19,12 @@ cdt_ui_ascii_safe 放行已覆盖码点（未覆盖仍折为可见 '?'，不静�
 字体真源（OFL，不入库）：third_party/dl/NotoSansSC-Regular.otf
     来源 github.com/notofonts/noto-cjk Sans/SubsetOTF/SC Regular v2.004
     sha256 faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
-子集范围：ASCII 0x20–0x7E + GB2312 一级汉字 3755 字（标准库 gb2312 编解码器
-程序化遍历区码 0xB0–0xD7 × 位码 0xA1–0xFE，一级止于 0xD7F9；不引入外部字表
-文件——确定性+无版权）+ tests/SCENARIOS.md、tests/UI_CONTRACT.md、
+子集范围：ASCII 0x20–0x7E + tests/SCENARIOS.md、tests/UI_CONTRACT.md、
 tests/fixtures/scenarios/、bridge/ 文案中出现的全部非 ASCII 码点
 （CJK 统一表意 + 中日韩标点/全角形式 + 文档用符号 → ∈ ≠ ≤ ≥ § × 等；
 刻意不含 emoji——S17 要求未知字形以可见替代符呈现）。
+wqy 点阵落地（A2，2026-09-11）后不再并入 GB2312 一级字表：GB2312 汉字由
+cdt_font_wqy_16/14 原生覆盖，本字体降级为纯 fallback（项目文案口径）。
 
 用法：
     python scripts/gen_font_noto_sc.py [--font PATH] [--out-dir shared/ui] [--check]
@@ -86,10 +86,16 @@ def gb2312_level1() -> list[int]:
 
 
 def collect_codepoints() -> list[int]:
-    """字符集真源（确定性，来源分布见 charset_stats()）：ASCII + GB2312 一级 +
-    项目文案全部非 ASCII，返回升序去重码点表。"""
+    """字符集真源（确定性，来源分布见 charset_stats()）：ASCII + 项目文案全部
+    非 ASCII，返回升序去重码点表。
+
+    wqy 点阵落地（A2，2026-09-11）后本字体降级为纯 fallback：GB2312 汉字由
+    cdt_font_wqy_16/14 原生覆盖，本字体回到项目文案口径（不再并入
+    gb2312_level1()），为 1M factory 分区让位；fallback 链语义不变
+    （wqy → 本字体 → 可见替代符）。历史口径（P2.4 扩充 GB2312 一级）见
+    git log；如需恢复，在 collect_codepoints 里重新并集 gb2312_level1()。
+    """
     cps = set(range(0x20, 0x7F))  # 常用 ASCII（可打印段）
-    cps.update(gb2312_level1())   # GB2312 一级汉字 3755 字
     for rel in CHARSET_SOURCES:
         text = (REPO / rel).read_text(encoding="utf-8")
         for ch in text:
@@ -221,7 +227,7 @@ def generate(font_path: Path, out_dir: Path) -> tuple[str, str]:
     provenance = f"""\
 /*
  * {HEADER_NAME}.c — Noto Sans SC 子集字体（生成文件，勿手改；P2.4 集成，A6；
- *   字体覆盖扩充至 GB2312 一级字表）
+ *   wqy 点阵落地后收窄回项目文案口径，仅作 fallback，A2 2026-09-11）
  *
  * 生成器：scripts/gen_font_noto_sc.py（fonttools+Pillow 自研 LVGL fmt_txt 导出，
  *   零 npm 依赖）。再生成（版本锁定，禁止裸 --with fonttools）：
@@ -235,17 +241,14 @@ def generate(font_path: Path, out_dir: Path) -> tuple[str, str]:
  *   版本锁定见生成器 PINNED_*，漂移即报错）
  * 覆盖范围：U+{range_start:04X}–U+{cps[-1]:04X}，共 {len(cps)} 码点 =
  *   ASCII 0x20–0x7E（{stats["ascii"]}）
- *   + GB2312 一级汉字 {stats["gb2312"]} 字（区码 0xB0–0xD7 × 位码 0xA1–0xFE，
- *   标准库 gb2312 程序化解码，止于 0xD7F9；其中 {stats["gb_new_vs_project"]} 字
- *   为本次扩充新增，不引入外部字表文件——确定性+无版权）
- *   + 项目文案全部非 ASCII（{stats["project_nonascii"]} 码点，其中
- *   {stats["project_outside_gb"]} 个在一级字表外：SCENARIOS/UI_CONTRACT/scenarios/
- *   bridge 的 CJK 标点/全角形式/→ ⇒ ∈ ≠ ≤ ≥ § × – — “ ” … 等）。
- * 边界（契约 §6「不静默缺字」）：未含字符——emoji、GB2312 一级字表外生僻字等
+ *   + 项目文案全部非 ASCII（{stats["project_nonascii"]} 码点）。
+ *   GB2312 汉字不再收录——wqy 点阵（cdt_font_wqy16/14）原生覆盖 GB2312 全部
+ *   6763 汉字，本字体只兜 wqy 缺字形的符号码点（→ ∈ ≠ ≤ ≥ § × – — “ ” … 等）。
+ * 边界（契约 §6「不静默缺字」）：未含字符——emoji、假名、生僻字等
  *   ——不以字形收录，cdt_ui_ascii_safe 折为可见 '?' 替代符呈现（S17 契约行为，
  *   非 bug；替代符本身不是本字体字形）。
- * 用法：仅作 Montserrat 14/16 的 lv_font_t.fallback（见 cdt_ui_internal.c）；
- *   ASCII 渲染仍走 Montserrat，逐像素不变。
+ * 用法：仅作 cdt_font_wqy_16/14 的 lv_font_t.fallback（fallback 链
+ *   wqy → 本字体 → 可见替代符，见 cdt_ui_internal.h F_*）。
  */
 #include <stdint.h>
 
@@ -361,11 +364,11 @@ bool {HEADER_NAME}_covers(uint32_t codepoint)
 extern "C" {{
 #endif
 
-/* 14px / 16px 子集字体（A4；与 Montserrat 14/16 同为行内回退备胎） */
+/* 14px / 16px 子集字体（A4；wqy 点阵 cdt_font_wqy_16/14 的行内回退备胎） */
 extern const lv_font_t cdt_font_noto_sc_14;
 extern const lv_font_t cdt_font_noto_sc_16;
 
-/* 码点是否在子集覆盖范围内（cdt_ui_ascii_safe 放行已覆盖 CJK） */
+/* 码点是否在子集覆盖范围内（cdt_ui_ascii_safe 放行 wqy 之外的符号码点） */
 bool cdt_font_noto_sc_covers(uint32_t codepoint);
 
 #ifdef __cplusplus
@@ -376,9 +379,8 @@ bool cdt_font_noto_sc_covers(uint32_t codepoint);
 """
 
     print(
-        f"[font] 字符集来源分布：ASCII {stats['ascii']} + GB2312 一级 {stats['gb2312']}"
-        f"（其中新增 {stats['gb_new_vs_project']}）+ 项目文案非 ASCII "
-        f"{stats['project_nonascii']}（{stats['project_outside_gb']} 个在一级字表外）")
+        f"[font] 字符集来源分布：ASCII {stats['ascii']} + 项目文案非 ASCII "
+        f"{stats['project_nonascii']}（GB2312 一级 0——wqy 点阵落地后收窄为纯 fallback）")
     blob_bytes = {s: len(pack_a4(per_size[s][0])[0]) for s in SIZES}
     print(f"[font] 合计覆盖 {stats['total']} 码点（U+{range_start:04X}–U+{cps[-1]:04X}，"
           f"跨区 {range_length}）；A4 位图 14px {blob_bytes[14]} B / "

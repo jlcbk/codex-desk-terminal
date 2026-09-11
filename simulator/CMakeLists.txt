@@ -47,7 +47,7 @@ add_executable(codex-display-sim
     "${SIM_PROJ_ROOT}/shared/presenter/cdt_presenter.c"
     "${SIM_PROJ_ROOT}/shared/power/cdt_power.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui.c"
-    "${SIM_PROJ_ROOT}/shared/ui/cdt_font_noto_sc.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_font_wqy16.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_now.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_internal.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_agents.c"
