@@ -29,7 +29,7 @@
 
 static volatile uint32_t s_key_event_count;
 
-static void on_key_event(void *user, cdt_key_event_t ev)
+static void on_key_event(void *user, cdt_key_hw_event_t ev)
 {
     (void)user;
     s_key_event_count++;

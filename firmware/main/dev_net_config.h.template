@@ -1,0 +1,48 @@
+/*
+ * dev_net_config.h.template — 整机联调网络凭据模板（整机集成 v1，A3+A4）
+ *
+ * 用法：
+ *   cp firmware/main/dev_net_config.h.template firmware/main/dev_net_config.h
+ *   然后填入真实值。
+ *
+ * 红线（AGENTS.md / 任务书）：
+ *   - dev_net_config.h 含全部凭据，已被 .gitignore 排除，绝不入库；
+ *   - 本模板不含任何可用默认值（占位串/占位指纹，真文件缺失时构建 #error）；
+ *   - DEVICE_TOKEN 是独立设备 token（Bridge config/local/device_token 同值，
+ *     protocol/transport.md §5.2：不使用 Codex 凭证）；
+ *   - DEV_BRIDGE_CA_PEM 与 DEV_BRIDGE_SPKI_SHA256_HEX 是设备侧 TLS 信任链
+ *     （transport.md §5.5 冻结：①自签 CA 验链 ②叶子证书 SPKI SHA-256
+ *     pinning，任一失败 = CONFIG_ERROR 终态），取自
+ *     config/local/dev-certs/（ca.pem / server_spki_sha256.txt，
+ *     由 scripts/run_bridge_lan.sh 检查/重建，SAN 必须含 DEV_BRIDGE_HOST）。
+ *     桥侧重启证书后两值都要同步更新。
+ *   - SSID 仅支持 2.4GHz（ESP32-S3 不支持 5GHz）。
+ */
+
+/* Wi-Fi STA（2.4GHz） */
+#define DEV_WIFI_SSID "REPLACE_WITH_WIFI_SSID"
+#define DEV_WIFI_PASS "REPLACE_WITH_WIFI_PASSWORD"
+
+/* Bridge（Mac LAN IP + 冻结业务路径 /v1/state 的端口；路径由协议冻结不配置） */
+#define DEV_BRIDGE_HOST "REPLACE_WITH_BRIDGE_LAN_IP"
+#define DEV_BRIDGE_PORT 8765
+
+/* 设备 token（独立设备 token；不使用 Codex 凭证） */
+#define DEV_DEVICE_TOKEN "REPLACE_WITH_DEVICE_TOKEN"
+
+/*
+ * TLS 信任链：自签 CA（PEM 全文）。粘贴 ca.pem 时每行加双引号并以 \n 结尾，
+ * 行间用反斜杠续行，形如：
+ * #define DEV_BRIDGE_CA_PEM \
+ *     "-----BEGIN CERTIFICATE-----\n" \
+ *     "MIIFazCCA1OgAwIBAgI...\n" \
+ *     ...
+ *     "-----END CERTIFICATE-----\n"
+ */
+#define DEV_BRIDGE_CA_PEM \
+    "-----BEGIN CERTIFICATE-----\n" \
+    "REPLACE_WITH_CA_PEM_LINES_EACH_QUOTED_ENDING_WITH_BACKSLASH_N\n" \
+    "-----END CERTIFICATE-----\n"
+
+/* 叶子证书 SPKI SHA-256（64 hex 字符；config/local/dev-certs/server_spki_sha256.txt） */
+#define DEV_BRIDGE_SPKI_SHA256_HEX "REPLACE_WITH_64HEX_SPKI_SHA256"

@@ -1,6 +1,8 @@
 # Name,   Type, SubType, Offset,  Size, Flags
 # wqy 点阵落地：factory 1M→4M（默认 singleapp 的 factory 1M 装不下全量点阵字体；
 # nvs/phy_init 布局与 partitions_singleapp.csv 一致，app 起始 0x10000 不变）
+# 整机集成（A3+A4，2026-09-11）：全量构建加入 WiFi+wss+TLS+NimBLE 后 app 超 4M
+# → factory 4M→12M（16MB flash 内；无 OTA，A0 授权沿用）。
 nvs,      data, nvs,     0x9000,  0x6000,
 phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x400000,
+factory,  app,  factory, 0x10000, 0xc00000,

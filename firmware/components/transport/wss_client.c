@@ -32,6 +32,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_websocket_client.h"
+#include "esp_tls_errors.h" /* ESP_ERR_ESP_TLS_TCP_CLOSED_FIN（连接中断分类） */
 #include "mbedtls/sha256.h"
 #include "nvs.h"
 
@@ -242,7 +243,13 @@ static void handle_ws_data(const esp_websocket_event_data_t *e)
         s_agg_len += (size_t)e->data_len;
     }
     bool complete = (e->payload_len > 0) &&
-                    (e->fin || (e->payload_offset + e->data_len) >= e->payload_len);
+                    ((e->payload_offset + (size_t)e->data_len) >= (size_t)e->payload_len);
+    /* 整机集成（A3+A4）W5 真机修复：完成判定只看 payload_offset+len 是否达到
+     * payload_len（消息总长）。原先的 "fin ||" 会在消息跨多个传输块时提前
+     * 交付半帧（真机实测 1133B 快照被拆成 816+317 两条、两条均 ERR_FIELD
+     * 拒绝——UNFINISHED 首块的 fin 语义不可靠）。
+     * 拒绝——UNFINISHED 首块的 fin 语义不可靠）。
+     */
     if (complete && s_agg_len > 0) {
         /* 库在分片消息后会补一帧零长 FIN 边界帧：deliver 后立即清零防重发 */
         size_t len = s_agg_len;
@@ -287,12 +294,17 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
     case WEBSOCKET_EVENT_ERROR: {
         esp_websocket_error_codes_t *eh = e ? &e->error_handle : NULL;
         int status = eh ? eh->esp_ws_handshake_status_code : 0;
+        int last_err = eh ? eh->esp_tls_last_esp_err : 0;
         cdt_wss_failure_t f = CDT_WSS_FAIL_RETRYABLE;
-        /* 顺序：401/403（§5.2 第 2 步）→ 证书/SPKI（§5.5）→ 其余可重试 */
+        /* 整机集成（A3+A4）W5 真机修复：仅握手阶段（无 TCP_CLOSED_FIN）且带
+         * 证书验证 flags 才判 CERT_PIN——连接中读 EOF 时 error_handle 会残留
+         * 非 0 flags，原先误判为 CONFIG_ERROR 终态、设备从此不再重连。 */
         if (status == 401) {
             f = CDT_WSS_FAIL_AUTH_401;
         } else if (status == 403) {
             f = CDT_WSS_FAIL_POLICY_403;
+        } else if (last_err == ESP_ERR_ESP_TLS_TCP_CLOSED_FIN) {
+            f = CDT_WSS_FAIL_RETRYABLE; /* 服务端关闭：按 1006/1000 语义可重试 */
         } else if (eh != NULL && eh->esp_tls_cert_verify_flags != 0) {
             f = CDT_WSS_FAIL_CERT_PIN;
         } else if (eh != NULL &&
@@ -301,9 +313,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t id, void *even
         }
         s_ctl.last_failure = f;
         s_ctl.last_detail = status;
-        ESP_LOGW(TAG, "错误事件：type=%d handshake_status=%d tls_flags=%d → %s",
-                 eh ? (int)eh->error_type : -1, status,
-                 eh ? eh->esp_tls_cert_verify_flags : 0,
+        ESP_LOGW(TAG, "错误事件：type=%d handshake_status=%d last_esp_err=%d → %s",
+                 eh ? (int)eh->error_type : -1, status, last_err,
                  cdt_wss_failure_name(f));
         xEventGroupSetBits(s_ev, EV_DISCONNECTED);
         break;
@@ -334,6 +345,12 @@ static esp_websocket_client_handle_t build_client(void)
     wc.ping_interval_sec = 20;        /* §5.2：与 Bridge 心跳节奏对齐 20s/20s */
     wc.pingpong_timeout_sec = 20;
     wc.task_prio = 4;
+    /* 整机集成（A3+A4）W5 真机修复：TLS 握手（x509 证书解析 + RSA 验签）在
+     * client 任务栈上进行，组件默认 4KB 必然栈溢出（真机表现为解析服务器
+     * 证书时内存被破坏 → TG1WDT 复位/写 -1，见
+     * artifacts/board/integration/serial_integration*.log）。12KB 对
+     * RSA-2048 验签 + 16KiB 聚合路径实测足够；P3.4/P6 复测可再调。 */
+    wc.task_stack = 12288;
     if (s_cfg.ca_pem != NULL) {
         wc.cert_pem = s_cfg.ca_pem;   /* ①CA 验链（SPKI pin 见文件尾 W5 注释） */
     }
@@ -370,13 +387,17 @@ static void connect_once(void)
 
     report(CDT_WSS_LINK_CONNECTING, CDT_WSS_FAIL_NONE, 0);
 
-    s_client = build_client();
     if (s_client == NULL) {
-        s_ctl.last_failure = CDT_WSS_FAIL_RETRYABLE; /* 资源失败可重试 */
-        ESP_LOGE(TAG, "esp_websocket_client_init 失败");
-    } else {
-        esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
-                                      on_ws_event, NULL);
+        s_client = build_client();
+        if (s_client == NULL) {
+            s_ctl.last_failure = CDT_WSS_FAIL_RETRYABLE; /* 资源失败可重试 */
+            ESP_LOGE(TAG, "esp_websocket_client_init 失败");
+        } else {
+            esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY,
+                                          on_ws_event, NULL);
+        }
+    }
+    if (s_client != NULL) {
         esp_websocket_client_start(s_client);
     }
 
@@ -413,14 +434,12 @@ static void connect_once(void)
         }
     }
 
-    if (s_client != NULL) {
-        if (s_ctl.running) {
-            esp_websocket_client_close(s_client, pdMS_TO_TICKS(1000));
-        }
-        esp_websocket_client_stop(s_client);
-        esp_websocket_client_destroy(s_client);
-        s_client = NULL;
-    }
+    /* 整机集成（A3+A4）W5 真机修复：不再逐轮 close/stop/destroy——真机实测
+     * 连接中断链（读 EOF）后 destroy 会与内部任务收尾竞争而挂死 wss 任务
+     * （证据 artifacts/board/integration/serial_integration*.log：断开后无任何
+     * 重连日志、链路镜像停在 connected）。改为客户端常驻、轮间仅依赖内部
+     * abort 状态 + start() 重连；stop/destroy 仅在 cdt_wss_stop() 电池保护
+     * 路径执行。 */
 
     if (!s_ctl.running) {
         return;
@@ -513,7 +532,11 @@ esp_err_t cdt_wss_start(const cdt_wss_config_t *cfg)
 
     s_cfg = *cfg; /* 浅拷贝：字符串与缓冲生命周期由调用方保证（至 stop 返回） */
     if (s_cfg.token != NULL) {
-        snprintf(s_auth_hdr, sizeof(s_auth_hdr), "Authorization: Bearer %s",
+        /* 整机集成（A3+A4）W5 真机修复：wc.headers 由 transport_ws 以 "%s" 原样
+         * 追加到升级请求（不带 CRLF），其后是请求终结符 "\r\n"——本骨架原先
+         * 少了行尾 CRLF，导致 Authorization 行吞掉终结符、请求缺空行，
+         * 任何 HTTP 服务端都会等待到超时（真机表现为升级 101 永不到来）。 */
+        snprintf(s_auth_hdr, sizeof(s_auth_hdr), "Authorization: Bearer %s\r\n",
                  s_cfg.token);
         char fp[9];
         cdt_wss_token_fingerprint8(s_cfg.token, fp);
@@ -562,14 +585,19 @@ esp_err_t cdt_wss_stop(void)
     s_started = false;
     s_ctl.config_error = false;
     if (s_task == NULL) {
-        /* 任务已清理完毕，事件组可安全回收 */
+        /* 任务已清理完毕；回收常驻客户端（电池保护路径，尽力而为） */
+        if (s_client != NULL) {
+            esp_websocket_client_close(s_client, pdMS_TO_TICKS(1000));
+            esp_websocket_client_destroy(s_client);
+            s_client = NULL;
+        }
         if (s_ev != NULL) {
             vEventGroupDelete(s_ev);
             s_ev = NULL;
         }
         return ESP_OK;
     }
-    return ESP_ERR_TIMEOUT; /* 6s 内未退出（骨架防御路径；不删组防竞态） */
+    return ESP_ERR_TIMEOUT; /* 6s 内未退出（防御路径；不删组防竞态） */
 }
 
 esp_err_t cdt_wss_send(const uint8_t *bytes, size_t len)

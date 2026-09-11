@@ -44,7 +44,7 @@ static esp_err_t key_gpio_init(void)
 static void feed_and_dispatch(cdt_key_pure_sm_t *sm, gpio_num_t pin, bool is_key)
 {
     cdt_key_pure_event_t e;
-    cdt_key_event_t out;
+    cdt_key_hw_event_t out;
 
     e = cdt_key_pure_feed(sm, (int)gpio_get_level(pin),
                           (int64_t)(esp_timer_get_time() / 1000));
@@ -71,7 +71,7 @@ static void key_poll_cb(void *arg)
     feed_and_dispatch(&s_sm_boot, (gpio_num_t)CDT_KEY_GPIO_BOOT, false);
 }
 
-const char *cdt_key_event_name(cdt_key_event_t ev)
+const char *cdt_key_event_name(cdt_key_hw_event_t ev)
 {
     switch (ev) {
     case CDT_KEY_EVENT_KEY_SHORT:

@@ -15,6 +15,7 @@
 
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include "st7305.h"
@@ -26,10 +27,13 @@
  * stride*h + I1 调色板 2*4 + LV_DRAW_BUF_ALIGN(4) = 15012B；不足时 reshape 返回
  * NULL，layer_reshape_draw_buf 的 LV_ASSERT_NULL 在本配置下编译为死循环（实测
  * 复现：task WDT 反复触发，栈顶 layer_reshape_draw_buf 自旋）。渲染仍只写前
- * 15000B（stride 50 * 300），flush_cb 快速路径按 15000B 取反，冗余区不参与。 */
+ * 15000B（stride 50 * 300），flush_cb 快速路径按 15000B 取反，冗余区不参与。
+ * 整机集成（真机 1301）：内部 RAM 紧张（esp-aes DMA 弹跳缓冲曾分配失败），
+ * 本缓冲仅 CPU 访问（LVGL 渲染 + flush_cb 逐行取反）→ 移入 PSRAM 静态区；
+ * SPI DMA 源（s_logical，st7305_flush 输入）保持内部 RAM。 */
 #define LVGL_PORT_BUF_EXTRA 64
-static uint8_t s_draw_buf[CDT_FRAME_BYTES + LVGL_PORT_BUF_EXTRA] __attribute__((aligned(64)));
-/* flush 落地的 cdt 逻辑帧（CRC 与面板 flush 共用同一份） */
+EXT_RAM_BSS_ATTR static uint8_t s_draw_buf[CDT_FRAME_BYTES + LVGL_PORT_BUF_EXTRA] __attribute__((aligned(64)));
+/* flush 落地的 cdt 逻辑帧（CRC 与面板 flush 共用同一份；SPI DMA 源，留内部 RAM） */
 static cdt_frame_t s_logical;
 static bool s_inited;
 

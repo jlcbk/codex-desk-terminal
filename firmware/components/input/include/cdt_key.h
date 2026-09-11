@@ -40,17 +40,21 @@ extern "C" {
 #define CDT_KEY_GPIO_KEY 18u  /* KEY：低有效 + 内部上拉 */
 #define CDT_KEY_GPIO_BOOT 0u  /* BOOT：低有效 + 内部上拉（strapping 注意，见文件头）*/
 
-/* 输出事件枚举（来源 × 种类） */
+/* 输出事件枚举（来源 × 种类）。
+ * 整机集成（A3+A4）更名 cdt_key_event_t → cdt_key_hw_event_t：与
+ * shared/ui/cdt_nav.h 的 UI 层 cdt_key_event_t（CDT_KEY_SHORT_PRESS 等，
+ * P0 冻结面）同名不同形，同一 TU（main.c）无法同时包含两处定义；
+ * 枚举值/事件语义不变。 */
 typedef enum {
     CDT_KEY_EVENT_NONE = 0,
     CDT_KEY_EVENT_KEY_SHORT = 1,  /* KEY 短按 → 上层映射轮页（§6）*/
     CDT_KEY_EVENT_KEY_LONG = 2,   /* KEY 长按 → 上层映射静音/确认（§6；B2 候选）*/
     CDT_KEY_EVENT_BOOT_SHORT = 3, /* BOOT 短按 → 保留（§1 下载用途）*/
     CDT_KEY_EVENT_BOOT_LONG = 4   /* BOOT 长按 → 保留 */
-} cdt_key_event_t;
+} cdt_key_hw_event_t;
 
 /* 事件名（日志用短名） */
-const char *cdt_key_event_name(cdt_key_event_t ev);
+const char *cdt_key_event_name(cdt_key_hw_event_t ev);
 
 /* ------------------------------------------------------------------ */
 /* 配置（start 时拷贝快照）                                             */
@@ -60,7 +64,7 @@ typedef struct {
     uint32_t long_press_ms; /* 0 → 默认 800ms（§6）*/
     uint32_t poll_period_ms;/* 轮询周期：0 → 默认 5ms（去抖分辨率；官方
                              * button_bsp 同为 5ms tick 轮询模式）*/
-    void (*on_event)(void *user, cdt_key_event_t ev); /* 必填；esp_timer 上下文 */
+    void (*on_event)(void *user, cdt_key_hw_event_t ev); /* 必填；esp_timer 上下文 */
     void *user;
 } cdt_key_config_t;
 

@@ -27,3 +27,5 @@ config/local/
 # IDF component manager 生成缓存（由 dependencies.lock 锁定版本，本体不入库）
 firmware/examples/*/managed_components/
 firmware/managed_components/
+# 设备联调凭据（模板入库，真值不入库）
+firmware/main/dev_net_config.h

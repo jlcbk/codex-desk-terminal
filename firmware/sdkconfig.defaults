@@ -7,6 +7,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
+# 整机集成：StateStore（2×17KiB scratch）+ 16KiB 快照收件槽放 PSRAM 静态区
+# （内部 DRAM 放不下：全量构建后 dram0.bss 溢出 ~25KB；EXT_RAM_BSS_ATTR）。
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
@@ -14,5 +17,21 @@ CONFIG_FREERTOS_HZ=1000
 
 # wqy 点阵落地（A2，2026-09-11）：全量 wqy 单字体 ~1.8MB 进 app，factory 1M 不足。
 # 16MB flash、无 OTA 诉求（A0 授权）→ 自定义分区表 factory 1M→4M（约 30% 余量）。
+# 整机集成（A3+A4，2026-09-11）：全量构建加入 WiFi+wss+TLS+NimBLE 后 app 超 4M
+# → factory 4M→12M（16MB flash 内，仍无 OTA）。
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 整机集成：BLE（NimBLE）编译参与（transport 组件 ble_peripheral.c），本集成
+# 用 WSS、不启动 BLE（同一时刻仅一个活动 transport，transport.md §1）。
+# 数值与 examples/transport_skeleton（A4 编译验证基线）一致。
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# 整机集成真机（1301）实测：内部 heap 起步仅 ~113KB，wifi+lwip+websocket 常驻后
+# mbedTLS ssl_setup（RSA-2048 握手需 ~48KB 内部块）分配失败
+# （MBEDTLS_ERR_SSL_SETUP_FAILED/-0x7F00，见 artifacts/board/integration/serial_boot.log）
+# → mbedTLS 缓冲与 wifi/lwip 动态缓冲优先 PSRAM。
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
