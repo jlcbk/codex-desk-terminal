@@ -161,7 +161,9 @@ echo ""
 echo "---- 设备侧固件配置提示（firmware/main/dev_net_config.h，gitignore 文件）----"
 echo "DEV_BRIDGE_HOST   \"$LAN_IP\""
 echo "DEV_BRIDGE_PORT   $PORT"
-echo "DEV_DEVICE_TOKEN  $(cat "$TOKEN_FILE")"
+# token 不回显明文（审核 R5：脚本自身约定"不进日志"）——已写入 $TOKEN_FILE，
+# 设备配置直接引用该文件内容；如需查看请手动 cat（注意终端留痕与轮换）
+echo "DEV_DEVICE_TOKEN  <已写入 $TOKEN_FILE，不回显>"
 echo "DEV_BRIDGE_SPKI_SHA256_HEX  $SPKI_HEX"
 echo "DEV_BRIDGE_CA_PEM ← 逐行加引号粘贴 ${CA_PEM_PATH}（见模板 firmware/main/dev_net_config.h.template）"
 echo "--------------------------------------------------------------------------"
