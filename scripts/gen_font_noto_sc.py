@@ -8,16 +8,20 @@ cdt_ui_ascii_safe 放行已覆盖码点（未覆盖仍折为可见 '?'，不静�
 两档字体只作 lv_font_t.fallback 使用（主字体 Montserrat 14/16，ASCII 渲染
 逐像素不变）；若主字体缺字由 LVGL 逐字形回退到本字体。
 
-生成期依赖（仅本脚本，一次性，不进构建）：
-    uv run --python 3.12 --with fonttools --with pillow python scripts/gen_font_noto_sc.py
+生成期依赖（仅本脚本，一次性，不进构建；版本锁定保证再生成零漂移）：
+    uv run --python 3.12 --with fonttools==4.64.0 --with pillow==12.3.0 \
+        python scripts/gen_font_noto_sc.py
 选 fonttools+Pillow 自研导出器而非 lv_font_conv：零 npm/node 依赖（任务红线
 倾向），fontTools 解析字体度量/ cmap、Pillow(FreeType) 栅格化，两者均为
 声明式纯转换，输出确定；生成产物（C 源码）入库，构建本身不依赖任何 Python。
+（不锁版本时 uv 会拉最新 fonttools，度量/解析行为不保证逐位一致——禁止。）
 
 字体真源（OFL，不入库）：third_party/dl/NotoSansSC-Regular.otf
     来源 github.com/notofonts/noto-cjk Sans/SubsetOTF/SC Regular v2.004
     sha256 faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
-子集范围：ASCII 0x20–0x7E + tests/SCENARIOS.md、tests/UI_CONTRACT.md、
+子集范围：ASCII 0x20–0x7E + GB2312 一级汉字 3755 字（标准库 gb2312 编解码器
+程序化遍历区码 0xB0–0xD7 × 位码 0xA1–0xFE，一级止于 0xD7F9；不引入外部字表
+文件——确定性+无版权）+ tests/SCENARIOS.md、tests/UI_CONTRACT.md、
 tests/fixtures/scenarios/、bridge/ 文案中出现的全部非 ASCII 码点
 （CJK 统一表意 + 中日韩标点/全角形式 + 文档用符号 → ∈ ≠ ≤ ≥ § × 等；
 刻意不含 emoji——S17 要求未知字形以可见替代符呈现）。
@@ -41,6 +45,11 @@ OUT_DIR = REPO / "shared" / "ui"
 SIZES = (14, 16)
 EXPECTED_SHA256 = "faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9"
 
+# 生成期工具版本锁（与首个入库产物一致）：栅格化/度量解析必须逐位可复现，
+# 版本漂移可能改变已有字形 → golden 回归。--with 显式锁定，此处双保险硬校验。
+PINNED_FONTTOOLS = "4.64.0"
+PINNED_PILLOW = "12.3.0"
+
 # 与锁定版本一致的确定性子集来源（charset 真源，勿加运行期随机内容）
 CHARSET_SOURCES = [
     "tests/SCENARIOS.md",
@@ -53,14 +62,59 @@ CHARSET_SOURCES += sorted(glob.glob("tests/fixtures/bridge/*.jsonl"))
 HEADER_NAME = "cdt_font_noto_sc"
 
 
+def gb2312_level1() -> list[int]:
+    """GB2312 一级汉字（3755 字）——程序化生成，不引入外部字表文件（确定性+无版权）。
+
+    用 Python 标准编码 gb2312 遍历：区码 0xB0–0xD7 × 位码 0xA1–0xFE（EUC-CN 双
+    字节）。一级字表止于 0xD7F9（区 0xD7 位 0xFA 起为空位/二级起点）；解码越界/
+    异常的位跳过（容错）。期望恰返回 3755 个互异码点——数量异常立即报错，
+    防上游编码表变动静默改变子集。
+    """
+    cps: list[int] = []
+    for qu in range(0xB0, 0xD8):
+        for wei in range(0xA1, 0xFF):
+            if qu == 0xD7 and wei > 0xF9:
+                break  # 一级字表止于 0xD7F9
+            try:
+                cps.append(ord(bytes((qu, wei)).decode("gb2312")))
+            except UnicodeDecodeError:
+                continue  # 空位/异常：跳过
+    if len(cps) != 3755 or len(set(cps)) != 3755:
+        raise SystemExit(
+            f"GB2312 一级字表解码数异常：{len(cps)}（含去重 {len(set(cps))}），期望 3755")
+    return cps
+
+
 def collect_codepoints() -> list[int]:
+    """字符集真源（确定性，来源分布见 charset_stats()）：ASCII + GB2312 一级 +
+    项目文案全部非 ASCII，返回升序去重码点表。"""
     cps = set(range(0x20, 0x7F))  # 常用 ASCII（可打印段）
+    cps.update(gb2312_level1())   # GB2312 一级汉字 3755 字
     for rel in CHARSET_SOURCES:
         text = (REPO / rel).read_text(encoding="utf-8")
         for ch in text:
             if ord(ch) >= 0x80:
                 cps.add(ord(ch))
     return sorted(cps)
+
+
+def charset_stats(cps: list[int]) -> dict[str, int]:
+    """来源分布统计（生成器报告打印用）。"""
+    ascii_set = set(range(0x20, 0x7F))
+    gb_set = set(gb2312_level1())
+    proj = set()
+    for rel in CHARSET_SOURCES:
+        for ch in (REPO / rel).read_text(encoding="utf-8"):
+            if ord(ch) >= 0x80:
+                proj.add(ord(ch))
+    return {
+        "ascii": len(ascii_set & set(cps)),
+        "gb2312": len(gb_set & set(cps)),
+        "gb_new_vs_project": len(gb_set - proj - ascii_set),
+        "project_nonascii": len(proj),
+        "project_outside_gb": len(proj - gb_set),
+        "total": len(cps),
+    }
 
 
 def rasterize_size(font_path: Path, size: int, cps: list[int]):
@@ -146,6 +200,12 @@ def generate(font_path: Path, out_dir: Path) -> tuple[str, str]:
     import fontTools
     import PIL.features as feats
 
+    if fontTools.version != PINNED_FONTTOOLS or PIL.__version__ != PINNED_PILLOW:
+        raise SystemExit(
+            f"生成期工具版本漂移：fonttools {fontTools.version}"
+            f"（锁 {PINNED_FONTTOOLS}）/ Pillow {PIL.__version__}"
+            f"（锁 {PINNED_PILLOW}）——栅格化不保证逐位一致，请按 docstring 锁版本再生成")
+
     per_size = {}
     for size in SIZES:
         per_size[size] = rasterize_size(font_path, size, cps)
@@ -157,22 +217,33 @@ def generate(font_path: Path, out_dir: Path) -> tuple[str, str]:
         raise SystemExit(f"码点跨度过大 {range_length}（>65535，SPARSE_TINY 放不下）")
     rcp_list = [cp - range_start for cp in cps]
 
+    stats = charset_stats(cps)
     provenance = f"""\
 /*
- * {HEADER_NAME}.c — Noto Sans SC 子集字体（生成文件，勿手改；P2.4 集成，A6）
+ * {HEADER_NAME}.c — Noto Sans SC 子集字体（生成文件，勿手改；P2.4 集成，A6；
+ *   字体覆盖扩充至 GB2312 一级字表）
  *
  * 生成器：scripts/gen_font_noto_sc.py（fonttools+Pillow 自研 LVGL fmt_txt 导出，
- *   零 npm 依赖）。再生成：uv run --python 3.12 --with fonttools --with pillow \\
+ *   零 npm 依赖）。再生成（版本锁定，禁止裸 --with fonttools）：
+ *   uv run --python 3.12 --with fonttools==4.64.0 --with pillow==12.3.0 \\
  *   python scripts/gen_font_noto_sc.py
  * 字体真源：Noto Sans SC Regular v2.004（SIL OFL 1.1，授权允许嵌入分发）
  *   来源 github.com/notofonts/noto-cjk Sans/SubsetOTF/SC（下载留档 third_party/dl/）
  *   sha256 {EXPECTED_SHA256}
  * 生成工具版本：fonttools {fontTools.version} / Pillow {PIL.__version__}
- *   / FreeType {feats.version("freetype")}（栅格化仅在生成期，产物入库后固定）
- * 子集范围：U+{range_start:04X}–U+{cps[-1]:04X}，共 {len(cps)} 码点
- *   = ASCII 0x20–0x7E + SCENARIOS/UI_CONTRACT/scenarios/bridge 文案全部非 ASCII
- *   （CJK 统一表意 + CJK 标点 + 全角形式 + → ⇒ ∈ ≠ ≤ ≥ § × – — “ ” …）；
- *   刻意不含 emoji（S17：未知字形以可见 '?' 替代，不静默缺字）。
+ *   / FreeType {feats.version("freetype")}（栅格化仅在生成期，产物入库后固定；
+ *   版本锁定见生成器 PINNED_*，漂移即报错）
+ * 覆盖范围：U+{range_start:04X}–U+{cps[-1]:04X}，共 {len(cps)} 码点 =
+ *   ASCII 0x20–0x7E（{stats["ascii"]}）
+ *   + GB2312 一级汉字 {stats["gb2312"]} 字（区码 0xB0–0xD7 × 位码 0xA1–0xFE，
+ *   标准库 gb2312 程序化解码，止于 0xD7F9；其中 {stats["gb_new_vs_project"]} 字
+ *   为本次扩充新增，不引入外部字表文件——确定性+无版权）
+ *   + 项目文案全部非 ASCII（{stats["project_nonascii"]} 码点，其中
+ *   {stats["project_outside_gb"]} 个在一级字表外：SCENARIOS/UI_CONTRACT/scenarios/
+ *   bridge 的 CJK 标点/全角形式/→ ⇒ ∈ ≠ ≤ ≥ § × – — “ ” … 等）。
+ * 边界（契约 §6「不静默缺字」）：未含字符——emoji、GB2312 一级字表外生僻字等
+ *   ——不以字形收录，cdt_ui_ascii_safe 折为可见 '?' 替代符呈现（S17 契约行为，
+ *   非 bug；替代符本身不是本字体字形）。
  * 用法：仅作 Montserrat 14/16 的 lv_font_t.fallback（见 cdt_ui_internal.c）；
  *   ASCII 渲染仍走 Montserrat，逐像素不变。
  */
@@ -303,6 +374,15 @@ bool cdt_font_noto_sc_covers(uint32_t codepoint);
 
 #endif /* CDT_FONT_NOTO_SC_H */
 """
+
+    print(
+        f"[font] 字符集来源分布：ASCII {stats['ascii']} + GB2312 一级 {stats['gb2312']}"
+        f"（其中新增 {stats['gb_new_vs_project']}）+ 项目文案非 ASCII "
+        f"{stats['project_nonascii']}（{stats['project_outside_gb']} 个在一级字表外）")
+    blob_bytes = {s: len(pack_a4(per_size[s][0])[0]) for s in SIZES}
+    print(f"[font] 合计覆盖 {stats['total']} 码点（U+{range_start:04X}–U+{cps[-1]:04X}，"
+          f"跨区 {range_length}）；A4 位图 14px {blob_bytes[14]} B / "
+          f"16px {blob_bytes[16]} B（未含 dsc/cmap 表）")
     return provenance + body, header
 
 
