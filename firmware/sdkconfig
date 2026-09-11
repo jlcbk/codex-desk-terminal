@@ -2677,6 +2677,12 @@ CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # end of Wi-Fi Provisioning Manager
 
 #
+# CodexDT dev net (P5.2)
+#
+CONFIG_CDT_WIFI_PS_MODE=1
+# end of CodexDT dev net (P5.2)
+
+#
 # ESP WebSocket client
 #
 # CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER is not set

@@ -35,3 +35,8 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # → mbedTLS 缓冲与 wifi/lwip 动态缓冲优先 PSRAM。
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# P5.2 前半（连接稳定性，2026-09-11）：WiFi STA 省电模式显式化（0=NONE 1=MIN 2=MAX）。
+# IDF 默认 MIN_MODEM；A/B 数据与默认值理由见 artifacts/board/p52/report.md。
+# 注意：CONNECTED_IDLE 的 modem-sleep 精细联动归 P5.2 后半；功耗实测归 P6.1。
+CONFIG_CDT_WIFI_PS_MODE=1

@@ -314,6 +314,15 @@ def _tls_thread_server(args: argparse.Namespace, up_port: int,
                 LOGGER.info("tls-relay %s handshake ok (%s)", peer_addr, tls.version())
                 tls.settimeout(None)
                 up = socket.create_connection(("127.0.0.1", up_port), timeout=10)
+                # P5.2 前半修复（2026-09-11 真机证据
+                # artifacts/board/integration/a4-reconnect/bridge_cycle3.log）：
+                # create_connection 的 timeout=10 会驻留为 socket 收发超时，
+                # 下方 pump(up>..) 的 recv 在"服务端静默 >10s"（场景 hold 期、
+                # keepalive 15s 间隔）时抛 OSError timed out → shutdown 写向
+                # 设备发 FIN → 设备误判断链退避重连（10 分钟 7 次的假断链根因；
+                # 同期设备 ping→pong RTT max 229ms，设备侧从未 RX 停滞）。
+                # 与上方 tls.settimeout(None) 对称：转发线程改为纯阻塞。
+                up.settimeout(None)
                 LOGGER.info("tls-relay %s upstream connected", peer_addr)
                 t = threading.Thread(target=_pump, args=(tls, up, f"(tls>{peer_addr})"), daemon=True)
                 t.start()
