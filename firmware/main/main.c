@@ -488,6 +488,22 @@ static void power_handle_actions(cdt_power_action_t acts, int64_t now, bool *nee
     }
     if (acts & CDT_POWER_ACT_BATTERY_FAULT) {
         ESP_LOGE(TAG, "[power] BATTERY_FAULT（连续 3 次无效样本）：关高功耗活动并提示");
+#if CDT_HAS_NET_CONFIG
+        /* 裁决1（app_power_policy.h 单源谓词）：§7.1 字面「关闭高功耗活动」——
+         * 故障成立当拍立即停 WSS（快照流/TLS 心跳即停）；WiFi STA 的最终关闭
+         * 仍归既有宽限→受控休眠路径（do_sleep_sequence → cb_stop_radio 一次
+         * 关 wss+net），两段不重复建模。恢复样本有效后不自动重启无线（v1 保守
+         * 策略）：与 KEY 深睡唤醒同款——FSM 故障恢复只发 BATTERY_FAULT_
+         * RECOVERED（不发 ALLOW_RADIO_START），重启保底 = PWR 重新上电走
+         * 冷启动 BOOT_CHECK 重新判定；故障期内的采样有效性不足以背书无线
+         * 重启决策，不猜。cdt_wss_stop 阻塞 ≤6s（组件兜底），故障路径可接受
+         * （10s 宽限内必入睡）。 */
+        if (app_power_fault_stop_radio_now(acts) && s_radio_started) {
+            esp_err_t fr = cdt_wss_stop();
+            ESP_LOGW(TAG, "[power] BATTERY_FAULT 即停无线: wss=%s（恢复后不自动重启，"
+                     "保底 PWR 重新上电）", esp_err_to_name(fr));
+        }
+#endif
         *need_render = true;
     }
     if (acts & (CDT_POWER_ACT_ENTER_LOW_WARN | CDT_POWER_ACT_EXIT_LOW_WARN |
@@ -734,13 +750,20 @@ static void app_task(void *arg)
         handle_inbox(now, &need_render);
 
         /* 电池采样调度：10s 常规 / 1Hz 近阈值（§7.1；故障宽限期 1Hz 给恢复
-         * 机会——R3b：invalid 样本必须能以合法节奏持续进 FSM） */
+         * 机会——R3b：invalid 样本必须能以合法节奏持续进 FSM）。
+         * 裁决2 配套：boot_recovery_required（低压唤醒 hint + 首批采样失败的
+         * recovery 稳定计时）也按 1Hz——FSM 连续性定义（cdt_power.c
+         * handle_valid_sample）假设「计时在跑即 §7.1 1Hz 节奏」（间隔 >2s 构成
+         * 缺测并重置 recov_running）；健康样本 >3750mV 会使前三个条件全假，
+         * 10s 常规节奏每次采样都重置 recovery 稳定计时 → ALLOW 永不发出，
+         * 运行期接线在该子路径不可达。 */
         bool fast = cdt_battery_should_sample_fast(
                         (s_have_sample && s_last_sample.valid) ? s_last_sample.battery_mv : 0) ||
                     s_fsm.state == CDT_POWER_LOW_WARN ||
                     s_fsm.state == CDT_POWER_CRITICAL ||
                     s_fsm.state == CDT_POWER_SLEEP_PREP ||
-                    s_fsm.battery_fault;
+                    s_fsm.battery_fault ||
+                    s_fsm.boot_recovery_required;
         int64_t period = fast ? BATTERY_PERIOD_FAST_MS : BATTERY_PERIOD_NORMAL_MS;
         if (last_sample < 0 || now - last_sample >= period) {
             last_sample = now;
@@ -777,6 +800,22 @@ static void app_task(void *arg)
             };
             cdt_power_action_t acts = cdt_power_step(&s_fsm, &in, now);
             power_handle_actions(acts, now, &need_render);
+#if CDT_HAS_NET_CONFIG
+            /* 裁决2（app_power_policy.h 单源谓词）：ALLOW_RADIO_START 运行期接线
+             * ——BOOT_CHECK 首批采样失败时无线未启动，主循环持续检测 FSM 启动
+             * 判定；恢复样本使 FSM 发 ALLOW（首批恢复 / recovery 稳定 10s）时
+             * 真正 start_radio（旧代码该动作仅日志，开无线请求被丢弃）。已启动
+             * 不重复启动；睡眠请求锁存优先（同拍有睡眠动作不开无线）。BLOCK_
+             * RADIO_START 属 BOOT_CHECK 域动作，运行期出现仅如实记日志。 */
+            if (app_power_runtime_radio_allow(acts, s_radio_started) &&
+                !s_sleep_latched) {
+                ESP_LOGW(TAG, "[power] 运行期 ALLOW_RADIO_START → 启动无线");
+                start_radio();
+                need_render = true;
+            } else if (acts & CDT_POWER_ACT_BLOCK_RADIO_START) {
+                ESP_LOGE(TAG, "[power] 运行期 BLOCK_RADIO_START（无线保持关闭）");
+            }
+#endif
             if (s_sleep_latched) {
                 do_sleep_sequence(acts); /* R3a：锁存即执行；真机不返回 */
             }

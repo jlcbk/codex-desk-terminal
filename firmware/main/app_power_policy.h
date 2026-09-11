@@ -46,6 +46,26 @@ static inline cdt_power_sample_t app_power_invalid_sample(int64_t now_ms)
     return s;
 }
 
+/* 裁决1（烧录验证轮落地，A0 遗留①）：§7.1 字面「连续 3 次失败进入
+ * BATTERY_FAULT：关闭高功耗活动并提示」——该动作位出现时 main 必须当拍立即
+ * 停 WSS（业务流/TLS 心跳即停），不等到宽限后的 §7.3 停止顺序（该顺序仍负责
+ * 最终的 wss+net 全量关闭与深睡）。 */
+static inline bool app_power_fault_stop_radio_now(cdt_power_action_t acts)
+{
+    return (acts & CDT_POWER_ACT_BATTERY_FAULT) != 0;
+}
+
+/* 裁决2（烧录验证轮落地，A0 遗留②）：ALLOW_RADIO_START 运行期接线——无线
+ * 未启动（如 BOOT_CHECK 首批采样失败未过启动判定）且 FSM 发 ALLOW_RADIO_START
+ * （首批恢复样本的启动判定 / recovery 稳定 10s，均见 cdt_power.c）→ 允许
+ * start_radio。已启动不得因 ALLOW 重复启动；调用点须先查睡眠请求锁存
+ * （睡眠优先于开无线）。 */
+static inline bool app_power_runtime_radio_allow(cdt_power_action_t acts,
+                                                 bool radio_started)
+{
+    return !radio_started && (acts & CDT_POWER_ACT_ALLOW_RADIO_START) != 0;
+}
+
 #ifdef __cplusplus
 }
 #endif
