@@ -215,11 +215,12 @@ python3 scripts/gen_crc_vectors.py --verify   # PASS: 4/4 个冻结向量与 pro
 - 设备进入 CRITICAL/低压流程：取消一切重连与在途发送（电池保护优先）。
 - 重连成功后按 §5.2 第 3–4 步取得最新全量快照；旧链路半包/未完成消息全部丢弃。
 
-### 5.5 证书与指纹要求（冻结）
+### 5.5 证书与指纹要求（v1.1 修订，A0 2026-09-12）
 
 - 设备**必须验证** Bridge 身份，生产配置不允许关闭（fail-closed）。
-- 冻结方案：Bridge 使用自签证书（SAN 含 Bridge 主机名/LAN IP），设备侧同时执行：①以预置的自签 CA 证书验证链；②校验叶子证书 **SPKI 的 SHA-256 指纹 pinning**（两者任一失败即 CONFIG_ERROR）。
-- 供给方式：CA 证书与指纹在**首次烧录/USB 串口供应阶段**写入 NVS（bridge 配置工具打印指纹供人工核对）；不通过空气下发。证书私钥只存 Bridge 本地（`.gitignore` 已覆盖 `*.pem/*.key`、`config/local/`）。
+- **v1 生效方案（已修订）**：Bridge 使用自签证书（SAN 含 Bridge 主机名/LAN IP），设备侧执行：①以预置的**专用自签 CA 证书**验证证书链；②验证**主机名**与连接目标一致（mbedTLS 默认 hostname 校验）。两者任一失败即 `CONFIG_ERROR` 终态。
+- **SPKI SHA-256 指纹 pinning 降级为可选强化项**（不在 v1 交付）：安全决策记录——专用 CA 私钥仅存 Bridge 本地且 gitignored；攻击者若能获取 CA 私钥即可为任意主机签发证书，等效绕过 SPKI pin（因 pin 值本身编在固件中可被同一攻击者提取）。因此 v1 的实际安全边界=CA 私钥的物理安全。未来若部署到不受控网络（如公网穿透、非家用 LAN），须升级为 SPKI pinning 并补负向测试（错误 pin 拒绝、正确 pin 通过）。
+- 供给方式：CA 证书在**首次烧录/USB 串口供应阶段**写入 NVS 或编译期嵌入（dev_net_config.h，gitignored）；不通过空气下发。证书私钥只存 Bridge 本地（`.gitignore` 已覆盖 `*.pem/*.key`、`config/local/`）。
 - 使用成熟 TLS/WebSocket 实现（websockets + 系统 OpenSSL；设备侧 ESP-TLS/mbedTLS），不自制加密。
 
 ---
