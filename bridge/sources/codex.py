@@ -23,6 +23,18 @@ NormalizedEvent 喂 StateEngine，产出真实 AppState 快照序列。
 - 每次交互带超时；原始 IO 日志落盘前经 bridge/redact.py 清洗，
   凭证/邮箱/home 路径不入 fixture 或日志。
 
+R2 服务钩子（scripts/bridge_serve_codex.py 持续服务用；CLI 批式路径不变）：
+- ``snapshot_sink``：每份快照渲染后立即回调（实时交付 Transport），设置后
+  不再把快照 append 进 self.snapshots（长驻内存有界，ARCHITECTURE_REVIEW
+  R2：不能沿用不断 append 列表作为长驻策略）；报告改用 _applied 计数与
+  _last_snapshot，批式模式（sink=None）行为与 P3.1 完全一致。
+- ``raw_log_max``：>0 时原始日志用有界 deque（长驻上限），0=不设限（批式）。
+- ``rate_limits_after_turn``：turn 以 completed 终态后、进程仍在时补一次
+  account/rateLimits/read（R2 配额流：启动读一次 + 每次 turn 后更新）；
+  失败保留最近已知窗口（发空事件清屏），绝不伪造额度。
+- 服务进程退出不自动重跑 prompt：serve 以 backoff=() 单次会话运行
+  （R2：断连恢复只重同步，不重复执行业务任务）。
+
 事件映射（app-server method → NormalizedEvent，见 bridge/events.py docstring）：
 thread/started、thread/status/changed（activeFlags 确认 needs_you；缺请求
 载荷时按 STATUS.md P1.1 结论合成 pending，等真实请求到达后替换）、
@@ -54,6 +66,7 @@ source_disconnected 的 stale 快照（线程记录不变、不伪造终态）�
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import random
@@ -63,7 +76,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from .. import events as ev
 from ..codex_rpc import (
@@ -508,7 +521,10 @@ class CodexAdapter:
                  collaboration_mode: Optional[str] = None,
                  thread_config: Optional[dict] = None,
                  task_label: str = "P3.1", run_label: Optional[str] = None,
-                 epoch: Optional[str] = None, rng=None) -> None:
+                 epoch: Optional[str] = None, rng=None,
+                 snapshot_sink: Optional[Callable[[dict], None]] = None,
+                 raw_log_max: int = 0,
+                 rate_limits_after_turn: bool = False) -> None:
         if not prompt or not isinstance(prompt, str):
             raise ValueError("prompt must be a non-empty string")
         if not model:
@@ -541,13 +557,21 @@ class CodexAdapter:
         self.task_label = task_label
         self.run_label = run_label
         self.epoch = epoch
+        # R2 服务钩子：snapshot_sink 每份快照即时回调（不累积进 self.snapshots，
+        # 长驻内存有界）；raw_log_max>0 时原始日志有界。批式默认行为不变。
+        self.snapshot_sink = snapshot_sink
+        self.raw_log: list | collections.deque = (
+            collections.deque(maxlen=int(raw_log_max)) if raw_log_max and raw_log_max > 0
+            else [])
+        self.rate_limits_after_turn = bool(rate_limits_after_turn)
+        self._applied = 0            # 实际产出快照计数（含 sink 模式）
+        self._last_snapshot = None   # 最近一份快照（报告 last_usage 用）
         # P3.2 裁决 C：重连成功即重建 StateEngine（新 bridge_epoch、seq 归零）。
         self._epoch_base = epoch          # 首个 epoch（重连派生 epoch 的基底）
         self._engine_generation = 0       # 成功重连次数（0 = 尚未重连）
         self._ever_connected = False      # 本次 run 是否已有会话通过 initialize
         self._rng = rng or random.Random()
         self.snapshots: list = []
-        self.raw_log: list = []
         self.capabilities: dict = {}
         self.attempts: list = []
         self.engine: Optional[StateEngine] = None
@@ -631,6 +655,19 @@ class CodexAdapter:
             return attempt
         try:
             self._session_inner(client, tmpdir, attempt)
+            # R2 服务钩子：turn 以 completed 终态且进程仍在 → 补读一次配额
+            # （失败保留最近已知窗口，不发 rate_limits_unavailable 清屏）。
+            # 独立 try：读配额竞态失败不影响已取得的 turn 终态与退出码。
+            if (self.rate_limits_after_turn and attempt.ended_by == "turn_completed"
+                    and client.alive()):
+                try:
+                    self._apply(
+                        self._rate_limits_events(
+                            client, cap_key="rate_limits_after_turn",
+                            emit_unavailable=False),
+                        {"dir": "bridge", "note": "post-turn account/rateLimits/read"})
+                except (RpcError, RpcTimeout, RuntimeError):
+                    self.capabilities["rate_limits_after_turn_error"] = "read raced process exit"
         except RuntimeError as exc:  # app-server 进程中途退出（请求得不到应答）
             attempt.ended_by = "process_exit"
             attempt.error = scrub_text(str(exc), 200)
@@ -856,28 +893,50 @@ class CodexAdapter:
         self._apply(events, None)
 
     def _startup_rate_limits(self, client: AppServerClient) -> list:
+        """启动额度读取（P3.1 原语义：失败 → rate_limits_unavailable 降级）。"""
+        return self._rate_limits_events(client, cap_key="rate_limits_startup",
+                                        emit_unavailable=True)
+
+    def _rate_limits_events(self, client: AppServerClient, *,
+                            cap_key: str = "rate_limits_startup",
+                            emit_unavailable: bool = True) -> list:
+        """account/rateLimits/read → rate_limits 事件（R2 拆分：turn 后补读
+        emit_unavailable=False——失败保留最近已知窗口，不清空、不伪造）。"""
         try:
             resp = client.request("account/rateLimits/read", None,
                                   timeout=self.connect_timeout)
         except (RpcError, RpcTimeout) as exc:
-            self.capabilities["rate_limits_read"] = False
-            self.capabilities["rate_limits_error"] = scrub_text(str(exc), 200)
-            return [ev.rate_limits_unavailable()]
+            if emit_unavailable:
+                self.capabilities["rate_limits_read"] = False
+                self.capabilities["rate_limits_error"] = scrub_text(str(exc), 200)
+                return [ev.rate_limits_unavailable()]
+            self.capabilities[cap_key + "_error"] = scrub_text(str(exc), 200)
+            return []
         rate_limits = resp.get("rateLimits") if isinstance(resp, dict) else None
         windows = windows_from_rate_limits(rate_limits)
         if windows:
             self.capabilities["rate_limits_read"] = True
-            self.capabilities["rate_limits_startup"] = [dict(w) for w in windows]
+            self.capabilities[cap_key] = [dict(w) for w in windows]
             return [ev.rate_limits(windows)]
-        self.capabilities["rate_limits_read"] = False
-        self.capabilities["rate_limits_error"] = "response had no usable windows"
-        return [ev.rate_limits_unavailable()]
+        if emit_unavailable:
+            self.capabilities["rate_limits_read"] = False
+            self.capabilities["rate_limits_error"] = "response had no usable windows"
+            return [ev.rate_limits_unavailable()]
+        self.capabilities[cap_key + "_error"] = "response had no usable windows"
+        return []
 
     # ---- 落盘辅助 ------------------------------------------------------------
     def _apply(self, events, raw_note) -> None:
         for event in events:
             snapshot = self.engine.apply(event, self._mono_ms())
-            self.snapshots.append(snapshot)
+            self._applied += 1
+            self._last_snapshot = snapshot
+            if self.snapshot_sink is not None:
+                # R2 服务钩子：快照即时交付（事件归一化后立即通知 Transport），
+                # 不 append 进内存列表（长驻有界，ARCHITECTURE_REVIEW R2）。
+                self.snapshot_sink(snapshot)
+            else:
+                self.snapshots.append(snapshot)
         if raw_note is not None:
             self._log_raw(raw_note)
 
@@ -886,7 +945,7 @@ class CodexAdapter:
         self.raw_log.append({"at_ms": self._wall_ms(), **entry})
 
     def _build_report(self, exit_code: int, exit_reason: str) -> dict:
-        last = self.snapshots[-1] if self.snapshots else None
+        last = self._last_snapshot
         report = {
             "task": self.task_label,
             "bridge_epoch": self.epoch,
@@ -897,7 +956,8 @@ class CodexAdapter:
             "attempts": self.attempts,
             "exit_code": exit_code,
             "exit_reason": exit_reason,
-            "snapshot_count": len(self.snapshots),
+            # sink 模式（serve）快照不累积，计数仍如实反映产出总量。
+            "snapshot_count": self._applied,
             "last_usage": last.get("usage") if last else None,
             "notifications_seen": dict(self.mapper.notifications_seen),
             "server_requests_seen": list(self.mapper.server_requests_seen),

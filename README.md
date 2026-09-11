@@ -113,12 +113,25 @@ uv run --python 3.12 python -m bridge --source codex --prompt "只回复 ok" --o
 `--live` 安全语义一句话：仅在隔离临时 cwd 创建 **ephemeral 受控会话**（readOnly 沙箱、无网络、绝不 resume/触碰已存在 thread、绝不 approve/reject/answer，等待超时只 interrupt 自己的 turn）。退出码表与脱敏说明见 `bridge/__main__.py` 与 `bridge/redact.py`；凭证不进 State、fixtures 或日志（落盘后自动脱敏自检）。
 
 ```sh
-# bridge 单元/适配器测试（A0 复跑 90 passed）
+# bridge 单元/适配器测试（A0 复跑 90 passed；R2 后 101 passed，含 serve_codex 11 用例）
 uv run --python 3.12 --with pytest --with jsonschema pytest tests/bridge -q
 
 # live smoke：真实 codex 受控 turn + 能力探测 + 脱敏自检（不在 pytest 默认集；会真实消耗一次 turn）
 python3 scripts/codex_live_smoke.py            # 支持 --interrupt-after/--prompt/--label 等，见脚本 docstring
 ```
+
+### 4.1 真实 codex 源运行（R2：持续服务）
+
+```sh
+# ① 起常驻服务（真实 codex source → 实时 WSS；端口/证书用法同 §6.3，此处 loopback 开发态）
+uv run --python 3.12 --with 'websockets==17.1' python3 scripts/bridge_serve_codex.py serve \
+  --host 127.0.0.1 --port 8765 --allow-insecure-loopback
+# ② 提交（两种等价）：unix socket 或目录投递（config/local/tasks/*.prompt 认领后归档）
+uv run --python 3.12 --with 'websockets==17.1' python3 scripts/bridge_serve_codex.py submit --prompt "只回复 ok"
+printf '%s\n' "只回复 ok" > config/local/tasks/my-task.prompt
+```
+
+每个提交 = 一个 ephemeral 只读沙箱会话（P3.1 安全参数：固定模型、no 网络、绝不 resume 已有 thread、审批只收不回），事件实时盖章 epoch/seq 推送 WSS，空闲推 threads 空的 IDLE 存活快照；任务证据在 `artifacts/serve_codex/<job>/`。**限制**：v1 真实数据形态 = bridge-owned 会话（桌面旁听 P3.6 blocked，见 docs/CODEX_CAPABILITIES.md）；多任务串行排队，进程退出不自动重跑 prompt；24h 长期驻留稳定性归 R6 未验证。
 
 ## 5. 固件工作流（ESP-IDF 5.5.5）
 

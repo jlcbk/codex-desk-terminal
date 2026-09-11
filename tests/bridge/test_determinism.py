@@ -55,11 +55,16 @@ def test_no_wall_clock_or_random_in_pure_modules():
     P3.2 后 A0 裁决（2026-09-10）：bridge/transports/ 整目录同为 IO 层
     （网络收发、退避抖动），按同一理由排除纯度扫描；传输的确定性语义
     （seq 单调、同字节输出）由 tests/transport/ 的协议测试覆盖。
+
+    R2 补记（2026-09-11，A1）：bridge/serve_codex.py 是持续服务编排层
+    （任务队列时间戳、归档命名、线程锁），与 mock 服务脚本同性质，不属于
+    纯快照管线；其"快照盖章只加 epoch/seq、不改内容"的语义由
+    tests/bridge/test_serve_codex.py 覆盖。
     """
     banned = ("import time", "import datetime", "import random", "import uuid",
               "time.time", "time.monotonic", "datetime.now", "datetime.utcnow",
               "random.", "uuid.", "os.environ", "getenv")
-    excluded = {"__main__.py", "codex.py", "codex_rpc.py"}
+    excluded = {"__main__.py", "codex.py", "codex_rpc.py", "serve_codex.py"}
     targets = [pathlib.Path("/Users/cui/Documents/Projects/codex-desk-terminal/bridge")]
     files = [p for p in targets[0].rglob("*.py")
              if p.name not in excluded
