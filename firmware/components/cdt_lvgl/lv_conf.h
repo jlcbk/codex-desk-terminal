@@ -69,13 +69,13 @@
 #define LV_USE_THEME_MONO 0
 #define LV_USE_THEME_SIMPLE 0
 
-/* wqy 点阵落地（A2，2026-09-11）：全量 BDF 位图 1.2MB > 2^20，必须开 LARGE
+/* unifont 换型（A2，2026-09-11）：全量 BDF 位图 1.6MB > 2^20，必须开 LARGE
  * （bitmap_index :20 位域 → uint32_t），否则 >1MB 偏移静默回绕渲染错乱。
  * 两端 lv_conf 关键项一致（P4.3 纪律），本项与 MONTSERRAT 开关同批修改。 */
 #define LV_FONT_FMT_TXT_LARGE 1
 
-#define LV_FONT_MONTSERRAT_14 1            /* 模拟器叠加标签（sim main.c）；共享 UI 已换 wqy 点阵 */
-#define LV_FONT_MONTSERRAT_16 0            /* 正文已换 cdt_font_wqy_16（wqy 点阵落地）——停用省 flash */
+#define LV_FONT_MONTSERRAT_14 1            /* 模拟器叠加标签（sim main.c）；共享 UI 已换 unifont 点阵 */
+#define LV_FONT_MONTSERRAT_16 0            /* 正文已换 cdt_font_unifont_16（unifont 换型）——停用省 flash */
 #define LV_FONT_MONTSERRAT_20 0
 #define LV_FONT_MONTSERRAT_28 1            /* 主状态词 28px（P2.1；§6 主状态 28-36px） */
 

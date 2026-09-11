@@ -10,10 +10,10 @@
 
 #include <stddef.h>
 
-#include "cdt_font_wqy16.h"
+#include "cdt_font_unifont16.h"
 #include "cdt_ui.h"
 
-/* 页面字体定义见下方 F_*（全量 wqy 单字体；wqy → 替代符，无 fallback 层） */
+/* 页面字体定义见下方 F_*（全量 unifont 单字体；unifont → 替代符，无 fallback 层） */
 
 /* 黑底文本 label（parent 内，默认空文本）。
  * 注意：后续若对返回值调用 cdt_uii_box（remove_style_all），字体样式会被
@@ -28,15 +28,19 @@ lv_obj_t *cdt_uii_text(lv_obj_t *parent, const lv_font_t *font, int x, int y,
 /* remove_style_all + 定位/尺寸（布局原子） */
 void cdt_uii_box(lv_obj_t *o, int x, int y, int wd, int ht);
 
-/* ---- 页面字体（wqy 点阵落地定稿 2026-09-11，A2）----
- * 全量 wqy 单字体（16×16 点阵，ASCII+CJK 一体，混排无基线接缝）、
- * 无 fallback 字体层：wqy → 可见替代符（cdt_ui_ascii_safe 折 '?'）。
+/* ---- 页面字体（unifont 换型 2026-09-11，A2；原 wqy16 资产留仓可回切）----
+ * 全量 unifont 单字体（16px 点阵，8×16 等宽 ASCII + 16×16 全宽 CJK，混排无
+ * 基线接缝）、无 fallback 字体层：unifont → 可见替代符（cdt_ui_ascii_safe 折
+ * '?'）。换型根因：用户真屏目检——wqy ASCII 非等宽不舒服、整体偏细；回切
+ * 方法 = 本处三行字槽改回 &cdt_font_wqy_16 + 构建 CMake 换回 cdt_font_wqy16.c
+ * + 重跑 gen_font_wqy.py（资产在仓）。line_height 18/base_line 4 两字体一致
+ * （转换器归一），布局零参数变化。
  * 编译期常量 lv_font_t，无需运行期初始化。次级字号以行距/布局手段区分。
  * F_STATUS 状态词恒为 ASCII（presenter 生成），维持纯 montserrat_28。 */
-#define F_TITLE  (&cdt_font_wqy_16)  /* 项目名/标题：wqy 16×16 */
+#define F_TITLE  (&cdt_font_unifont_16)  /* 项目名/标题：unifont 16px 等宽 */
 #define F_STATUS (&lv_font_montserrat_28)
-#define F_BODY   (&cdt_font_wqy_16)  /* 正文中文行：wqy 16×16 */
-#define F_BAR    (&cdt_font_wqy_16)  /* 底栏/行列表/提示条：同档 16×16（单字号定稿） */
+#define F_BODY   (&cdt_font_unifont_16)  /* 正文中文行：unifont 16×16 全宽 */
+#define F_BAR    (&cdt_font_unifont_16)  /* 底栏/行列表/提示条：同档 16px（单字号定稿） */
 
 /* 整屏页面根容器：400×300、透明、不可滚动、创建后隐藏。
  * 各页 widgets 挂在自己根容器下（相对坐标 = 绝对坐标）。 */

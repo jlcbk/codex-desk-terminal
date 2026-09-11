@@ -6,8 +6,8 @@
 
 #include "cdt_ui_internal.h"
 
-/* ---- 页面字体：见 cdt_ui_internal.h F_*（全量 wqy 单字体，无 fallback 层）----
- * 字体为编译期常量（cdt_font_wqy16 生成的 const lv_font_t，fallback=NULL），
+/* ---- 页面字体：见 cdt_ui_internal.h F_*（全量 unifont 单字体，无 fallback 层）----
+ * 字体为编译期常量（cdt_font_unifont16 生成的 const lv_font_t，fallback=NULL），
  * 无运行期初始化；本文件只保留页面共用小工具。 */
 
 lv_obj_t *cdt_uii_label(lv_obj_t *parent, const lv_font_t *font)
