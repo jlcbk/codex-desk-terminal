@@ -50,6 +50,12 @@
   运行中 → active；completed/stopped → idle；failed → turn_completed(failed,
   turn_id 优先该线程最近 rollout turnId 以通过 reducer 终态门闸，否则 agentId；
   summary=scrub(error,192))。
+- 子代理终态门闸（A0 ZC1-fix 裁决）：childSessionId 的最近 metadata status
+  ∈ {completed, failed, stopped} 期间，该会话后续 rollout 行一律不映射（不
+  working/turn_started/token/error，防止 working 无清除路径卡死屏幕状态），
+  只计数进 ``gated_late_rollout_lines``（报告元数据，不产协议事件）。门闸只在
+  metadata 仍为终态时生效：mtime 变化重读后状态翻回运行态（如 resume）即解除、
+  后续行恢复映射。只对有 metadata 的子代理会话生效，主会话不受影响。
 - 选择与上限：select_thread=最近活动线程（仅在有线程事件的拍发出）；会话池按
   最近活动排序，超出 max_threads 的最旧会话停止跟踪（记账移除，不发事件）；
   发事件前检查 engine 线程数 ≤ 协议上限 8（render.MAX_THREADS），超出上限的
@@ -206,6 +212,18 @@ def _usage_used_tokens(usage) -> Optional[int]:
     if isinstance(extra, int) and not isinstance(extra, bool):
         used += extra
     return used
+
+
+def _meta_is_terminal(meta) -> bool:
+    """metadata 是否处于观测终态（Z5 实测枚举 {completed, failed, stopped}）。
+
+    status 缺失但 completedAt 存在也视为终态（实测约定：运行中=无
+    completedAt）。mapper 的生命周期映射与观察器的终态门闸共用本判定，
+    保证两处对"终态"的口径完全一致。
+    """
+    status = meta.get("status")
+    return status in ("completed", "failed", "stopped") or (
+        status is None and meta.get("completedAt") is not None)
 
 
 def _agent_error_summary(error) -> str:
@@ -406,8 +424,7 @@ class ZcodeEventMapper:
             events.append(ev.thread_started(child_session_id, project,
                                             at_ms=at_ms))
         status = meta.get("status")
-        terminal = status in ("completed", "failed", "stopped") or (
-            status is None and meta.get("completedAt") is not None)
+        terminal = _meta_is_terminal(meta)
         if not terminal:
             # 运行中：活动心跳（观察器仅在 mtime 变化时重读，不刷屏）。
             events.append(ev.thread_status(child_session_id,
@@ -461,6 +478,9 @@ class ZcodeObserver:
         self._ever_seen = set()     # 曾注册过的会话（清池后再发现按休眠态入池）
         self._rollout_offsets = {}  # session_id -> 已读字节偏移
         self._agent_mtimes = {}     # metadata 路径 -> (mtime_ns, size)
+        # 子代理终态门闸（ZC1-fix）：最近一次观测为终态的 childSessionId 集合。
+        # 只在 metadata 仍为终态时生效——mtime 变化重读翻回运行态即移除（解除）。
+        self._terminal_children = set()
         self._spool_offset = None   # None = 未武装（首次见到文件=从尾部起读）
         self._rollout_ok = None     # None=未探测；rollout 根目录健康与否
         self._apply_seq = 0         # 拍内事件序号（select_thread 并列决胜）
@@ -468,6 +488,8 @@ class ZcodeObserver:
         self.polls = 0
         self.bad_lines = 0
         self.read_errors = 0
+        # 终态子代理迟到的 rollout 行计数（被门闸吞掉的行数；只进报告元数据）
+        self.gated_late_rollout_lines = 0
 
     # ---- 主入口 --------------------------------------------------------------
     def poll_once(self, monotonic_ms: int) -> list:
@@ -514,8 +536,16 @@ class ZcodeObserver:
         for _name, session_id, _tool, _at in spool_entries:
             self._note_activity(session_id, mono)   # hook 触发=真实活动
         agent_entries = self._scan_agents(time.time())
-        for child_id, _meta, _at in agent_entries:
+        for child_id, meta, _at in agent_entries:
             self._note_activity(child_id, mono)     # metadata 变化=真实活动
+            # 终态门闸集合维护：本步先于 rollout 映射（step 4），故 metadata
+            # 终态化/翻回运行态都在同一拍内对 rollout 行生效。翻回运行态
+            # （resume，completedAt 消失/status 变化）必然伴随 mtime 变化触发
+            # 重读（_scan_agents 只返回有变化的 metadata）→ 门闸在此解除。
+            if _meta_is_terminal(meta):
+                self._terminal_children.add(child_id)
+            else:
+                self._terminal_children.discard(child_id)
 
         # 3) 线程池上限：超出 max_threads 的最旧会话停止跟踪（仅移除记账，
         #    不发事件）。
@@ -536,6 +566,13 @@ class ZcodeObserver:
             if first_read:
                 # 冷启动/重读：只回放尾部（状态从尾部收敛，事件量有界）。
                 lines = lines[-COLD_START_MAX_RECORDS:]
+            if session_id in self._terminal_children:
+                # 子代理终态门闸（A0 ZC1-fix 裁决）：metadata 终态期间迟到的
+                # rollout 行一律吞掉——不 working/turn_started/token/error，
+                # 防止 working 无清除路径卡死屏幕状态；只计数进报告元数据，
+                # 不产协议事件。recency 仍刷新（文件确有新字节），不进 bad_lines。
+                self.gated_late_rollout_lines += len(lines)
+                continue
             records = []
             for raw in lines:
                 line = raw.decode("utf-8", errors="replace").strip()
@@ -611,6 +648,7 @@ class ZcodeObserver:
             "polls": self.polls,
             "bad_lines": self.bad_lines,
             "read_errors": self.read_errors,
+            "gated_late_rollout_lines": self.gated_late_rollout_lines,
             "tracked_sessions": len(self._sessions),
             "engine_threads": len(self.engine.thread_ids()),
             "rollout_ok": self._rollout_ok,
@@ -837,6 +875,9 @@ class ZcodeObserver:
         order = sorted(self._sessions.items(), key=lambda kv: (-kv[1], kv[0]))
         for session_id, _mono in order[len(order) - excess:]:
             del self._sessions[session_id]
+            # 终态门闸事实（_terminal_children）有意随清池保留：门闸的解除
+            # 途径只有"metadata 重读翻回运行态"（与池成员无关），否则清池后
+            # 重新入池的终态子代理会丢门闸、缺陷复活。
             self.mapper.forget_session(session_id)
 
     def _sessions_by_recency(self) -> List[str]:

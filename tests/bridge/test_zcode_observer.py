@@ -252,12 +252,16 @@ def test_subagent_lifecycle_and_shared_pool(validator, tmp_path):
     base = json.loads(
         (FIXTURES / "metadata_sample.json").read_text(encoding="utf-8"))
 
+    # 同池：metadata（project/生命周期）与 rollout（turn 真源）同拍汇入同一线程
     write_metadata(root, "agent_a1", base)       # running
+    append_line(rollout_path(root, child), model_io_line("t-child", 100, 10))
     snaps = obs.poll_once(1000)
     check_all(validator, snaps)
     thread = thread_of(snaps[-1], child)
-    assert thread["state"] == "working"          # thread_started + active
-    assert thread["project"] == "zcode-fixture-project"
+    assert thread["state"] == "working"
+    assert thread["project"] == "zcode-fixture-project"   # 来自 metadata.cwd
+    assert thread["turn_id"] == "t-child"                 # 来自 rollout 记录
+    assert thread["context"]["used_tokens"] == 110        # 来自 rollout usage
 
     write_metadata(root, "agent_a1", dict(      # completed（mtime/size 变化才重读）
         base, status="completed", completedAt="2026-09-12T10:05:00.000Z",
@@ -274,14 +278,83 @@ def test_subagent_lifecycle_and_shared_pool(validator, tmp_path):
     assert thread["state"] == "error" and thread["end_reason"] == "failed"
     assert thread["activity"] == "synthetic agent failure for <redacted>"
 
-    # 子代理 rollout 文件与 metadata 同池：新 turn 让线程重回 working
-    append_line(rollout_path(root, child), model_io_line("t-child", 100, 10))
+    # 终态门闸（详见 test_terminal_agent_gates_late_rollout_lines）：
+    # failed 后迟到的 rollout 行零事件；metadata 未变化的安静拍亦无事件
+    append_line(rollout_path(root, child), model_io_line("t-after-failed", 5, 0))
+    assert obs.poll_once(4000) == []
+    assert obs.gated_late_rollout_lines == 1
+    assert obs.poll_once(5000) == []
+
+
+# ---------------------------------------------------------------------------
+# 子代理终态门闸（A0 ZC1-fix 裁决）：终态期间迟到 rollout 行零事件，翻回运行态解除
+# ---------------------------------------------------------------------------
+
+def _write_agent(root, variant, status, *, completed_at=None, updated_at):
+    base = json.loads(
+        (FIXTURES / "metadata_sample.json").read_text(encoding="utf-8"))
+    write_metadata(root, "agent_a1", dict(
+        base, status=status, completedAt=completed_at, updatedAt=updated_at))
+
+
+def test_terminal_agent_gates_late_rollout_lines(validator, tmp_path):
+    """① completed 后追加 rollout 行 → 零事件（不 working/token），
+    gated_late_rollout_lines 递增；主会话（无 metadata）不受门闸影响。"""
+    root, engine, obs = make_world(tmp_path)
+    child = "sess_subagent_agent_fixture01"
+    _write_agent(root, "base", "running", updated_at="2026-09-12T10:01:00.000Z")
+    obs.poll_once(1000)
+    _write_agent(root, "done", "completed",
+                 completed_at="2026-09-12T10:05:00.000Z",
+                 updated_at="2026-09-12T10:05:00.000Z")
+    snaps = obs.poll_once(2000)
+    assert thread_states(snaps, child) == ["idle"]
+    assert obs.gated_late_rollout_lines == 0
+
+    append_line(rollout_path(root, child), model_io_line("t-late", 100, 10))
+    assert obs.poll_once(3000) == []             # 迟到行：零事件（不复活 working）
+    assert obs.gated_late_rollout_lines == 1
+    assert obs.describe()["gated_late_rollout_lines"] == 1
+
+    append_line(rollout_path(root, child), model_io_line("t-late", 200, 20))
+    assert obs.poll_once(4000) == []
+    assert obs.gated_late_rollout_lines == 2
+    assert obs.describe()["bad_lines"] == 0      # 被吞的是完整合法行，非坏行
+
+    # 门闸只对有 metadata 的子代理生效：主会话同拍照常映射
+    append_line(rollout_path(root), model_io_line("t-main", 10, 0))
+    snaps = obs.poll_once(5000)
+    check_all(validator, snaps)
+    main_thread = thread_of(snaps[-1], SID)
+    assert main_thread is not None and main_thread["state"] == "working"
+    assert obs.gated_late_rollout_lines == 2     # 主会话行不计入门闸
+
+
+def test_gate_lifts_when_metadata_returns_to_running(validator, tmp_path):
+    """② metadata 翻回运行态（resume：completedAt 消失）→ 门闸解除，
+    后续 rollout 行恢复映射为 working。"""
+    root, engine, obs = make_world(tmp_path)
+    child = "sess_subagent_agent_fixture01"
+    _write_agent(root, "base", "running", updated_at="2026-09-12T10:01:00.000Z")
+    obs.poll_once(1000)
+    _write_agent(root, "done", "completed",
+                 completed_at="2026-09-12T10:05:00.000Z",
+                 updated_at="2026-09-12T10:05:00.000Z")
+    obs.poll_once(2000)
+    append_line(rollout_path(root, child), model_io_line("t-late", 100, 10))
+    obs.poll_once(3000)
+    assert obs.gated_late_rollout_lines == 1
+
+    # resume：mtime 变化触发重读，status 翻回 running（completedAt 消失）
+    _write_agent(root, "resume", "running", updated_at="2026-09-12T10:06:00.000Z")
+    append_line(rollout_path(root, child), model_io_line("t-resume", 100, 10))
     snaps = obs.poll_once(4000)
     check_all(validator, snaps)
     thread = thread_of(snaps[-1], child)
-    assert thread["state"] == "working" and thread["turn_id"] == "t-child"
-    # metadata 未变化的拍不重读：安静拍无事件
-    assert obs.poll_once(5000) == []
+    assert thread["state"] == "working" and thread["turn_id"] == "t-resume"
+    assert obs.gated_late_rollout_lines == 1     # 解除后的行正常映射，不计数
+
+
 
 
 # ---------------------------------------------------------------------------

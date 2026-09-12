@@ -300,6 +300,18 @@ def test_agent_failed_prefers_last_rollout_turn_for_gate(mapper):
     assert completed.turn_id == "t-child"
 
 
+def test_meta_is_terminal_pure_predicate():
+    """终态判定（mapper 生命周期与观察器门闸共用，口径一致）。"""
+    terminal = {"status": "completed", "completedAt": "2026-09-12T10:00:00Z"}
+    assert zc._meta_is_terminal(terminal)
+    for status in ("failed", "stopped"):
+        assert zc._meta_is_terminal({"status": status, "completedAt": None})
+    # 实测约定：运行中 = 无 completedAt（status 缺失但有 completedAt 仍算终态）
+    assert not zc._meta_is_terminal({"status": "running", "completedAt": None})
+    assert not zc._meta_is_terminal({"status": None, "completedAt": None})
+    assert zc._meta_is_terminal({"status": None, "completedAt": "2026-09-12T10:00:00Z"})
+
+
 # ---------------------------------------------------------------------------
 # ISO 解析（纯函数，时区敏感）
 # ---------------------------------------------------------------------------
