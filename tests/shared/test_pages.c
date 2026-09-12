@@ -8,6 +8,9 @@
  *   - USAGE：窗口名取自数据（不编造）、pct 取整、实际窗口长度、reset 倒计时
  *     （fresh 推进/陈旧冻结/过期不猜 0%/缺失 RST --）、context 独立
  *     （token 不冒充 context）、额度缺失
+ *   - ZC5：NOW 信息条两段（CTX 三态 / 首窗口短词两态）、WAITING 仅 needs_you
+ *     语义（waiting_present）、AGENTS 行 elapsed（fresh 推进/终态定格）、
+ *     USAGE CONTEXT 行（K/K(p%) / K TOKENS / --）、NOW PLAN 面板数据（前 4 步）
  *   - P2.3 强制页：电池 critical/sleep_prep 优先于 NEEDS YOU；任意 selected_page
  *     下强制页不脱离；恢复（ACTIVE/健康链路）保留普通页面、计时解冻
  *   - 导航（cdt_nav，纯逻辑）：短按子页先推进再切主页面（P2 固定行为）、
@@ -366,6 +369,214 @@ static void test_usage_missing_and_context(void)
           "仅 token 总量 → 仍 CTX --（不冒充 context）", v.context_text);
 }
 
+/* ================== ZC5：NOW 信息条 / WAITING 语义 / AGENTS elapsed ================== */
+
+static void test_now_ctx_strip(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+
+    add_thread(&s, t);
+
+    /* 全缺 → 两段全空串（UI 整行隐藏） */
+    cdt_present(&s, &r, 30000, &v);
+    check(v.now_ctx_text[0] == '\0' && v.now_usage_text[0] == '\0',
+          "NOW 信息条：无 ctx 无窗口 → 两段空串（整行隐藏）", v.now_ctx_text);
+
+    /* 仅 used_tokens → K 格式（1024 基、向下取整，同 fmt_tokens_k）：
+     * 592000/1024=578 → "CTX 578K"（明确是 token 计数，不冒充百分比） */
+    s.threads[0].context.used_tokens_present = true;
+    s.threads[0].context.used_tokens = 592000;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.now_ctx_text, "CTX 578K") == 0,
+          "NOW 信息条：仅 used_tokens → CTX 578K（K 格式化）", v.now_ctx_text);
+
+    /* capacity+used（无可信百分比）→ 由 used/capacity 计算百分比：
+     * 180224/264192=68.2% → 68 */
+    s.threads[0].context.used_tokens = 180224;
+    s.threads[0].context.capacity_tokens_present = true;
+    s.threads[0].context.capacity_tokens = 264192;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.now_ctx_text, "CTX 68%") == 0,
+          "NOW 信息条：capacity 已知 → CTX 68%（used/capacity 计算）", v.now_ctx_text);
+
+    /* 可信 used_percent 优先于计算值 */
+    s.threads[0].context.used_percent_present = true;
+    s.threads[0].context.used_percent = 37.6;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.now_ctx_text, "CTX 38%") == 0,
+          "NOW 信息条：可信 used_percent 优先 → CTX 38%", v.now_ctx_text);
+}
+
+static void test_now_usage_strip(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    /* 整小时窗口：300min → "5H"；42.0 → 42% */
+    add_window(&s, "300 MIN WINDOW", 42.0, true, 300, false, 0);
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.now_usage_text, "5H 42%") == 0,
+          "NOW 信息条：首窗口整小时 → 5H 42%（分钟数压缩）", v.now_usage_text);
+
+    /* 非整小时窗口：取 label 前 4 字符（截断补 ".."）→ "QU.. 42%" */
+    s.usage.window_count = 0;
+    s.usage.windows_total = 0;
+    add_window(&s, "QUARTERLY-37", 42.0, true, 90, false, 0);
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.now_usage_text, "QU.. 42%") == 0,
+          "NOW 信息条：非整小时 → label 前 4 字符 QU.. 42%", v.now_usage_text);
+
+    /* percent null → 该段隐藏（空串） */
+    s.usage.windows[0].used_percent_present = false;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.now_usage_text[0] == '\0',
+          "NOW 信息条：窗口 percent null → 右段隐藏", v.now_usage_text);
+
+    /* 无额度 → 该段隐藏 */
+    s.usage.available = false;
+    s.usage.window_count = 0;
+    s.usage.windows_total = 0;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.now_usage_text[0] == '\0',
+          "NOW 信息条：无额度 → 右段隐藏", v.now_usage_text);
+}
+
+static void test_now_waiting_semantics(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+
+    add_thread(&s, t);
+
+    /* ZC5 语义修复：working 不再显示 WAITING（数据 waiting_text 仍填充） */
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.waiting_present && strcmp(v.waiting_text, "00:00") == 0,
+          "NOW WAITING：working → waiting_present=false（该位空白）", "");
+
+    s.threads[0].state = CDT_THREAD_STATE_NEEDS_YOU;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.waiting_present, "NOW WAITING：needs_you → 显示", "");
+
+    s.threads[0].end_reason = CDT_END_REASON_CANCELLED;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.cancelled && !v.waiting_present,
+          "NOW WAITING：cancelled 优先 → 不显示 WAITING（该位 CANCELLED）", "");
+
+    /* 无任务 → 不显示 */
+    s.thread_count = 0;
+    s.threads_total = 0;
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.waiting_present, "NOW WAITING：无任务 → 不显示", "");
+}
+
+static void test_agents_row_elapsed(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t a = mk_thread("t-a", CDT_THREAD_STATE_WORKING, 100, 0);
+    cdt_thread_t b = mk_thread("t-b", CDT_THREAD_STATE_DONE, 200, 0);
+
+    a.elapsed_ms = 3661000; /* 1h01m01s → "01:01:01" */
+    b.elapsed_ms = 59000;   /* 59s → "00:59" */
+    b.end_reason = CDT_END_REASON_COMPLETED; /* 终态：时长定格（与 NOW 同规则） */
+    add_thread(&s, a);
+    add_thread(&s, b);
+
+    /* now==last_rx：无增量；working 排序在前 */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.agents_rows[0].elapsed_text, "01:01:01") == 0,
+          "AGENTS 行 elapsed：working 行 hh:mm:ss", v.agents_rows[0].elapsed_text);
+    check(strcmp(v.agents_rows[1].elapsed_text, "00:59") == 0,
+          "AGENTS 行 elapsed：done 行 mm:ss（各行取自己的线程）",
+          v.agents_rows[1].elapsed_text);
+
+    /* fresh +60s：非终态推进；终态（done）定格在快照基值 */
+    cdt_present(&s, &r, 90000, &v);
+    check(strcmp(v.agents_rows[0].elapsed_text, "01:02:01") == 0,
+          "AGENTS 行 elapsed：fresh 推进 working 行",
+          v.agents_rows[0].elapsed_text);
+    check(strcmp(v.agents_rows[1].elapsed_text, "00:59") == 0,
+          "AGENTS 行 elapsed：终态定格不推进", v.agents_rows[1].elapsed_text);
+}
+
+static void test_now_plan_panel_data(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+    int i;
+
+    fill_plan(&t, 14, 8, 3); /* 3 done、5 in_progress/pending；原始 14 步 */
+    add_thread(&s, t);
+
+    cdt_present(&s, &r, 30000, &v);
+    /* 面板显隐数据：plan_present（total>0）→ 显示；计数 completed/total */
+    check(v.plan_present && v.plan_completed == 3 && v.plan_total == 14,
+          "NOW PLAN 面板：total>0 → 显示，计数 3 / 14", "");
+    /* 面板行数据：前 4 步（≤4）text+status 可用（列截断已在 plan_steps 完成） */
+    for (i = 0; i < 4; i++) {
+        if (v.plan_steps[i].text[0] == '\0') break;
+    }
+    check(i == 4 && v.plan_step_count == 8,
+          "NOW PLAN 面板：前 4 条步骤 text+status 可用（UI 取前 4 行）", "");
+    check(v.plan_steps[0].status == CDT_STEP_STATUS_COMPLETED &&
+              v.plan_steps[3].status == CDT_STEP_STATUS_IN_PROGRESS,
+          "NOW PLAN 面板：标记数据 completed/in_progress 原始顺序", "");
+
+    /* 无计划 → plan_present=false → 整面板隐藏（不留空框） */
+    s.threads[0].plan.total = 0;
+    s.threads[0].plan.step_count = 0;
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.plan_present, "NOW PLAN 面板：total==0 → 面板隐藏", "");
+}
+
+static void test_usage_context_line(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+
+    add_thread(&s, t);
+
+    /* 全无 → "CONTEXT --"（与页内其他缺值行风格一致） */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.context_line, "CONTEXT --") == 0,
+          "USAGE CONTEXT 行：全无 → CONTEXT --", v.context_line);
+
+    /* 仅 used → "CONTEXT 578K TOKENS"（592000/1024=578） */
+    s.threads[0].context.used_tokens_present = true;
+    s.threads[0].context.used_tokens = 592000;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.context_line, "CONTEXT 578K TOKENS") == 0,
+          "USAGE CONTEXT 行：仅 used → CONTEXT 578K TOKENS", v.context_line);
+
+    /* capacity+used（无可信百分比）→ K / K + 计算百分比：
+     * 180224→176K、264192→258K、68.2%→68 */
+    s.threads[0].context.used_tokens = 180224;
+    s.threads[0].context.capacity_tokens_present = true;
+    s.threads[0].context.capacity_tokens = 264192;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.context_line, "CONTEXT 176K / 258K (68%)") == 0,
+          "USAGE CONTEXT 行：capacity 已知 → CONTEXT 176K / 258K (68%)",
+          v.context_line);
+
+    /* 可信 used_percent 优先于计算值 */
+    s.threads[0].context.used_percent_present = true;
+    s.threads[0].context.used_percent = 37.6;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.context_line, "CONTEXT 176K / 258K (38%)") == 0,
+          "USAGE CONTEXT 行：可信 used_percent 优先 → (38%)", v.context_line);
+}
+
 /* ================== P2.3：强制页 / 恢复顺序 ================== */
 
 static void test_forced_page_priority(void)
@@ -574,6 +785,12 @@ int main(void)
     test_usage_windows();
     test_usage_expired_and_edge();
     test_usage_missing_and_context();
+    test_now_ctx_strip();
+    test_now_usage_strip();
+    test_now_waiting_semantics();
+    test_agents_row_elapsed();
+    test_now_plan_panel_data();
+    test_usage_context_line();
     test_forced_page_priority();
     test_recovery_order();
     test_nav_cycle();

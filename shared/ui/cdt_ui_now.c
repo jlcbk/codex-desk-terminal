@@ -1,28 +1,30 @@
 /*
- * cdt_ui_now.c — NOW 页构建与刷新（P2.1 创建；P2.2 挂入整页根容器，A2）
+ * cdt_ui_now.c — NOW 页构建与刷新（P2.1 创建；P2.2 挂入整页根容器，A2；
+ *                 ZC5 仪表盘化对齐效果图 1，A5）
  *
- * §6 NOW 行内容项 → 布局（400×300，外边距 8px，纯黑白两色）：
- *   y=  8.. 36  标题栏 28px：项目名（左）+ 电压（右）
+ * ZC5 布局（400×300，外边距 8px，纯黑白两色，自上而下）：
+ *   y=  8.. 32  标题栏：项目名（左，dot 截断）+ 电压（右）
  *   y=  36.. 56 链路提示条 20px（fresh 时隐藏；反白黑底白字）
- *   y=  64..116 主状态区 52px：28px 等宽醒目状态词；
+ *   y=  58..102 主状态区 44px：28px 等宽醒目状态词；
  *               needs_you → 反白（黑底白字）；error → 黑白粗框（3px 黑边框）
- *   y= 124..146 活动摘要 16px（LV_LABEL_LONG_DOT 像素级省略号兜底）
- *   y= 152..172 运行时长（左）/ 等待时长或 CANCELLED（右）
- *   y= 178..198 计划摘要 "PLAN 1/3"
- *   y= 204..224 额度摘要
- *   y= 230..250 attention 摘要（无则隐藏）
+ *   y= 106..124 活动摘要 18px（LV_LABEL_LONG_DOT 像素级省略号兜底）
+ *   y= 128..204 PLAN mini 面板 76px（ZC5 新增）：细边框（1px），最多 4 步，
+ *               每行「ASCII 标记 + 截断文本」（completed="[x]"、in_progress=">"、
+ *               pending="o"；unifont 有 ✓ 但与全页 ASCII 风格不一致，暂用 ASCII），
+ *               面板右上角计数 "n / total"；plan.total==0 → 整面板隐藏（不留空框）
+ *   y= 206..224 信息条 18px（ZC5 新增）：左 = "CTX 68%"/"CTX 578K"，右 =
+ *               首窗口短词 "5H 72%"；某段空串即隐藏，两段全无 → 整行隐藏
+ *   y= 228..246 运行时长（左）/ 等待时长或 CANCELLED（右）；
+ *               WAITING 仅 needs_you 显示（ZC5 语义修复：working 不再显示）
+ *   y= 248..266 attention 摘要 18px（无则隐藏）
  *   y= 266..268 底栏分隔线；y=268..292 底栏 24px：页面指示（左）/静音文字标签（右）
  *
- * P2.2 变更仅为结构：widgets 挂到整页根容器（400×300、透明、坐标不变），
- * 由 cdt_ui.c 按生效页切换可见性；文本/样式/坐标与 P2.1 完全一致（渲染
- * 逐像素不变，见 artifacts/ui 回归对照）。
- *
- * P2.4 修复（A6）：P2.1 的 make_label→make_box 顺序缺陷——cdt_uii_box 内
- * remove_style_all 会清掉先设的字体样式，致正文/标题实际以 LV_FONT_DEFAULT
- * 14px 渲染。全部文本改用顺序安全的 cdt_uii_text（先 remove_style_all/定位，
- * 后设字体颜色），坐标不变；状态词 28px 不受影响（本就走 cdt_uii_label 且
- * 未再过 make_box）。中文经 cdt_ui_ascii_safe 放行字体已覆盖码点（Noto Sans
- * SC 子集），未覆盖码点仍折为可见 '?'。
+ * 历史注记：
+ *   P2.2 变更仅为结构：widgets 挂到整页根容器（400×300、透明、坐标不变），
+ *   由 cdt_ui.c 按生效页切换可见性。
+ *   P2.4 修复（A6）：make_label→make_box 顺序缺陷——全部文本改用顺序安全的
+ *   cdt_uii_text（先 remove_style_all/定位，后设字体颜色）；状态词 28px 不受
+ *   影响。中文经 cdt_ui_ascii_safe 放行字体已覆盖码点，未覆盖码点折为 '?'。
  * UI 不做任何 IO/网络/ADC 调用。
  */
 #include <stdio.h>
@@ -30,6 +32,9 @@
 #include "cdt_ui.h"
 #include "cdt_ui_internal.h"
 #include "cdt_ui_now.h"
+
+/* PLAN mini 面板行数上限（效果图 1；与 PLAN 页 4 行/页同为 4） */
+#define NOW_PLAN_ROWS 4
 
 static lv_obj_t *now_root;
 
@@ -41,10 +46,14 @@ typedef struct {
     lv_obj_t *status_box;   /* 主状态区（容器，承载反白/粗框） */
     lv_obj_t *status_label;
     lv_obj_t *activity;
+    lv_obj_t *plan_panel;   /* ZC5：PLAN mini 面板（细边框容器） */
+    lv_obj_t *plan_mark[NOW_PLAN_ROWS];   /* 行首 ASCII 标记 [x] / > / o */
+    lv_obj_t *plan_text[NOW_PLAN_ROWS];   /* 步骤截断文本 */
+    lv_obj_t *plan_counter; /* 面板右上角 "n / total" */
+    lv_obj_t *info_ctx;     /* ZC5：信息条左 "CTX 68%" / "CTX 578K" */
+    lv_obj_t *info_usage;   /* ZC5：信息条右 "5H 72%" */
     lv_obj_t *elapsed;      /* "ELAPSED 02:00" */
-    lv_obj_t *wait;         /* "WAITING 00:05" / "CANCELLED" */
-    lv_obj_t *plan;
-    lv_obj_t *usage;
+    lv_obj_t *wait;         /* "WAITING 00:05"（仅 needs_you）/ "CANCELLED" */
     lv_obj_t *attention;
     lv_obj_t *page_ind;     /* 底栏左 */
     lv_obj_t *mute;         /* 底栏右 */
@@ -65,8 +74,9 @@ static void set_text_ascii(lv_obj_t *label, const char *view_text)
 void cdt_ui_now_create(void)
 {
     lv_obj_t *scr = now_root = cdt_uii_page_root();
+    int i;
 
-    /* ---- 标题栏 28px：项目名（左，dot 截断）+ 电压（右）----
+    /* ---- 标题栏：项目名（左，dot 截断）+ 电压（右）----
      * 全部文本走 cdt_uii_text（remove_style_all 后设字体，顺序安全）。*/
     w.project = cdt_uii_text(scr, F_TITLE, 8, 12, 292, 20);
     lv_label_set_long_mode(w.project, LV_LABEL_LONG_DOT);
@@ -86,29 +96,53 @@ void cdt_ui_now_create(void)
     lv_obj_set_style_text_color(w.link_label, lv_color_white(), LV_PART_MAIN);
     lv_obj_center(w.link_label);
 
-    /* ---- 主状态区 52px：needs_you 反白 / error 粗框 ---- */
+    /* ---- 主状态区 44px：needs_you 反白 / error 粗框 ---- */
     w.status_box = lv_obj_create(scr);
-    cdt_uii_box(w.status_box, 8, 64, 384, 52);
+    cdt_uii_box(w.status_box, 8, 58, 384, 44);
 
     w.status_label = cdt_uii_label(w.status_box, F_STATUS);
     lv_obj_center(w.status_label);
 
     /* ---- 活动摘要（像素级 dot 截断兜底）---- */
-    w.activity = cdt_uii_text(scr, F_BODY, 8, 124, 384, 20);
+    w.activity = cdt_uii_text(scr, F_BODY, 8, 106, 384, 18);
     lv_label_set_long_mode(w.activity, LV_LABEL_LONG_DOT);
 
-    /* ---- 运行 / 等待时长 ---- */
-    w.elapsed = cdt_uii_text(scr, F_BODY, 8, 152, 240, 20);
+    /* ---- PLAN mini 面板（ZC5，效果图 1）：细边框 1px、最多 4 步 ----
+     * 面板坐标 (8,128,384,76)；行内相对坐标：标记 x=2、文本 x=32（dot 兜底）、
+     * 计数右上角右对齐。total==0 时整个面板隐藏（apply）。*/
+    w.plan_panel = lv_obj_create(scr);
+    cdt_uii_box(w.plan_panel, 8, 128, 384, 76);
+    lv_obj_set_style_border_color(w.plan_panel, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(w.plan_panel, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(w.plan_panel, LV_OPA_TRANSP, LV_PART_MAIN);
 
-    w.wait = cdt_uii_text(scr, F_BODY, 192, 152, 200, 20);
+    for (i = 0; i < NOW_PLAN_ROWS; i++) {
+        w.plan_mark[i] = cdt_uii_text(w.plan_panel, F_BAR, 2, 4 + i * 18, 28, 18);
+        w.plan_text[i] = cdt_uii_text(w.plan_panel, F_BAR, 32, 4 + i * 18, 236, 18);
+        lv_label_set_long_mode(w.plan_text[i], LV_LABEL_LONG_DOT);
+        lv_obj_add_flag(w.plan_mark[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(w.plan_text[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    w.plan_counter = cdt_uii_text(w.plan_panel, F_BAR, 272, 4, 108, 18);
+    lv_obj_set_style_text_align(w.plan_counter, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+
+    lv_obj_add_flag(w.plan_panel, LV_OBJ_FLAG_HIDDEN);
+
+    /* ---- 信息条（ZC5，效果图 1）：左 CTX / 右首窗口短词（右对齐）---- */
+    w.info_ctx = cdt_uii_text(scr, F_BODY, 8, 206, 184, 18);
+
+    w.info_usage = cdt_uii_text(scr, F_BODY, 208, 206, 184, 18);
+    lv_obj_set_style_text_align(w.info_usage, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+
+    /* ---- 运行 / 等待时长 ---- */
+    w.elapsed = cdt_uii_text(scr, F_BODY, 8, 228, 240, 18);
+
+    w.wait = cdt_uii_text(scr, F_BODY, 192, 228, 200, 18);
     lv_obj_set_style_text_align(w.wait, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 
-    /* ---- 计划摘要 / 额度摘要 / attention ---- */
-    w.plan = cdt_uii_text(scr, F_BODY, 8, 178, 384, 20);
-
-    w.usage = cdt_uii_text(scr, F_BODY, 8, 204, 384, 20);
-
-    w.attention = cdt_uii_text(scr, F_BODY, 8, 230, 384, 20);
+    /* ---- attention ---- */
+    w.attention = cdt_uii_text(scr, F_BODY, 8, 248, 384, 18);
     lv_label_set_long_mode(w.attention, LV_LABEL_LONG_DOT);
 
     /* ---- 底栏：分隔线 + 页面指示 + 静音文字标签（图标为文字占位）---- */
@@ -183,24 +217,61 @@ void cdt_ui_now_apply(const cdt_view_t *view)
     snprintf(buf, sizeof(buf), "ELAPSED %s", view->elapsed_text);
     set_text_ascii(w.elapsed, buf);
 
+    /* ZC5 WAITING 语义：仅 needs_you 显示；CANCELLED 保留（§6 取消可见）；
+     * 其他状态该位空白（修复 working 也显示 WAITING 的瑕疵）。 */
     if (view->cancelled) {
-        /* §6：取消显示 IDLE + 已取消 */
         lv_label_set_text(w.wait, "CANCELLED");
     }
-    else {
+    else if (view->waiting_present) {
         snprintf(buf, sizeof(buf), "WAITING %s", view->waiting_text);
         set_text_ascii(w.wait, buf);
     }
+    else {
+        lv_label_set_text(w.wait, "");
+    }
 
+    /* ---- PLAN mini 面板（ZC5）：total==0 → 整体隐藏（无 plan 不留空框）----
+     * 取 plan_steps 前 4 条（原始顺序）；计数 = completed / total。 */
     if (view->plan_present) {
-        set_text_ascii(w.plan, view->plan_text);
-        lv_obj_remove_flag(w.plan, LV_OBJ_FLAG_HIDDEN);
+        int i;
+
+        snprintf(buf, sizeof(buf), "%u / %u",
+                 (unsigned)view->plan_completed, (unsigned)view->plan_total);
+        cdt_uii_set_text(w.plan_counter, buf);
+
+        for (i = 0; i < NOW_PLAN_ROWS; i++) {
+            if (i < (int)view->plan_step_count) {
+                const cdt_plan_step_row_t *row = &view->plan_steps[i];
+
+                switch ((cdt_step_status_t)row->status) {
+                    case CDT_STEP_STATUS_COMPLETED:
+                        lv_label_set_text(w.plan_mark[i], "[x]");
+                        break;
+                    case CDT_STEP_STATUS_IN_PROGRESS:
+                        lv_label_set_text(w.plan_mark[i], ">"); /* 当前步骤标记 */
+                        break;
+                    default:
+                        lv_label_set_text(w.plan_mark[i], "o");
+                        break;
+                }
+                cdt_uii_set_text(w.plan_text[i], row->text);
+                lv_obj_remove_flag(w.plan_mark[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(w.plan_text[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            else {
+                lv_obj_add_flag(w.plan_mark[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(w.plan_text[i], LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        lv_obj_remove_flag(w.plan_panel, LV_OBJ_FLAG_HIDDEN);
     }
     else {
-        lv_obj_add_flag(w.plan, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(w.plan_panel, LV_OBJ_FLAG_HIDDEN);
     }
 
-    set_text_ascii(w.usage, view->usage_text);
+    /* ---- 信息条（ZC5）：空串段自然不可见，两段全无 → 整行空白 ---- */
+    set_text_ascii(w.info_ctx, view->now_ctx_text);
+    set_text_ascii(w.info_usage, view->now_usage_text);
 
     if (view->attention_present) {
         snprintf(buf, sizeof(buf), "%u PENDING: %s",

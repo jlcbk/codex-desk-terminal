@@ -1,9 +1,10 @@
 /*
- * cdt_ui_agents.c — AGENTS 页（P2.2，A2）
+ * cdt_ui_agents.c — AGENTS 页（P2.2，A2；ZC5 行尾时长，A5）
  *
  * §6 AGENTS 行：NEEDS YOU→ERROR→WORKING/THINKING→DONE→IDLE 排序（排序在
  * presenter 完成）；最多 4 行/页（子页切片由 nav.agents_page 选择）；
- * 显示总数/裁剪标记（"TOTAL n (+m)"）；needs_you 行首 "!" 等待提醒标记。
+ * 显示总数/裁剪标记（"TOTAL n (+m)"）；needs_you 行首 "!" 等待提醒标记；
+ * ZC5：行尾右对齐该线程 elapsed（mm:ss / hh:mm:ss，终态定格在快照基值）。
  * 布局：标题 28 / 链路条 20 / 4×42px 行 / 裁剪行 / 底栏 24。
  */
 #include <stdio.h>
@@ -22,7 +23,8 @@ typedef struct {
     lv_obj_t *rows[CDT_VIEW_ROWS_PER_PAGE];       /* 每行容器 */
     lv_obj_t *row_mark[CDT_VIEW_ROWS_PER_PAGE];   /* 行首 "!" 等待提醒标记 */
     lv_obj_t *row_state[CDT_VIEW_ROWS_PER_PAGE];  /* 行左：状态词 */
-    lv_obj_t *row_project[CDT_VIEW_ROWS_PER_PAGE];/* 行右：项目名 */
+    lv_obj_t *row_project[CDT_VIEW_ROWS_PER_PAGE];/* 行中：项目名 */
+    lv_obj_t *row_elapsed[CDT_VIEW_ROWS_PER_PAGE];/* ZC5 行右：右对齐 elapsed */
     lv_obj_t *trunc;     /* 裁剪/总数行 */
     lv_obj_t *empty;     /* 无数据提示 */
     lv_obj_t *page_ind;
@@ -57,8 +59,14 @@ void cdt_ui_agents_create(void)
         ag.row_state[i] = cdt_uii_text(ag.rows[i], F_BAR, 16, 4, 150, 18);
         lv_label_set_long_mode(ag.row_state[i], LV_LABEL_LONG_DOT);
 
-        ag.row_project[i] = cdt_uii_text(ag.rows[i], F_BAR, 170, 4, 214, 18);
+        /* ZC5：行右让位给右对齐 elapsed（"hh:mm:ss" 最长 9 字符），项目名
+         * 列预算同步收窄（CDT_VIEW_AGENTS_PROJECT_MAX_COLS）。 */
+        ag.row_project[i] = cdt_uii_text(ag.rows[i], F_BAR, 170, 4, 124, 18);
         lv_label_set_long_mode(ag.row_project[i], LV_LABEL_LONG_DOT);
+
+        ag.row_elapsed[i] = cdt_uii_text(ag.rows[i], F_BAR, 300, 4, 76, 18);
+        lv_label_set_long_mode(ag.row_elapsed[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(ag.row_elapsed[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 
         if (i > 0) { /* 行分隔线 */
             sep = lv_obj_create(ag.rows[i]);
@@ -92,6 +100,7 @@ static void apply_row(int i, const cdt_agents_row_t *row)
     }
     cdt_uii_set_text(ag.row_state[i], row->state_label);
     cdt_uii_set_text(ag.row_project[i], row->project);
+    cdt_uii_set_text(ag.row_elapsed[i], row->elapsed_text); /* ZC5：行尾时长 */
 
     /* needs_you / error 行强调：反白状态词（黑底白字，§6 等待状态醒目） */
     if (row->emphasized) {

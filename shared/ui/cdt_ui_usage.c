@@ -1,10 +1,13 @@
 /*
- * cdt_ui_usage.c — USAGE 页（P2.2，A2）
+ * cdt_ui_usage.c — USAGE 页（P2.2，A2；ZC5 CONTEXT 行，A5）
  *
  * §6 USAGE 行：实际窗口长度（duration_mins 来自数据，不硬编码 5h/周）、
  * usedPercent、reset 倒计时（presenter 按 resets_at_ms−业务时钟计算；
  * 已过 reset 显示 EXPIRED 不猜 0%）、context（若可得；无百分比 → "--"，
  * 累计 token 不冒充 context）。额度缺失整页显示 "--"（S18）。
+ * ZC5：windows 列表下方 CONTEXT 行 —— capacity+used 已知 →
+ * "CONTEXT 176K / 258K (68%)"；仅 used → "CONTEXT 578K TOKENS"；
+ * 全无 → "CONTEXT --"（与页内其他缺值行风格一致）。
  */
 #include <stdio.h>
 
@@ -20,7 +23,7 @@ typedef struct {
     lv_obj_t *banner_label;
     lv_obj_t *rows[CDT_MAX_USAGE_WINDOWS];
     lv_obj_t *empty;     /* 额度缺失 "--" */
-    lv_obj_t *context;   /* "CTX 43%" / "CTX --" */
+    lv_obj_t *context;   /* ZC5："CONTEXT 176K / 258K (68%)" 等（原 "CTX 43%" 行） */
     lv_obj_t *page_ind;
     lv_obj_t *mute;
 } usage_widgets_t;
@@ -113,7 +116,9 @@ void cdt_ui_usage_apply(const cdt_view_t *view)
         }
     }
 
-    cdt_uii_set_text(us.context, view->context_text);
+    /* ZC5：CONTEXT 行（效果图 5）——capacity+used → "K / K (p%)"；
+     * 仅 used → "K TOKENS"；全无 → "CONTEXT --"。 */
+    cdt_uii_set_text(us.context, view->context_line);
     cdt_uii_page_ind_set(us.page_ind, "USAGE", 1, 1);
     lv_label_set_text(us.mute, view->muted ? "[x] MUTED" : "[ ] SOUND ON");
 }
