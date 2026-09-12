@@ -168,7 +168,10 @@ static cdtj_err_t parse_source(cdt_json_t *j, cdt_source_t *out)
                     out->kind = CDT_SOURCE_MOCK;
                 } else if (n == 18 && memcmp(tmp, "codex_bridge_owned", 18) == 0) {
                     out->kind = CDT_SOURCE_CODEX_BRIDGE_OWNED;
-                } else if (n == 21 && memcmp(tmp, "codex_desktop_observed", 21) == 0) {
+                } else if (n == 22 && memcmp(tmp, "codex_desktop_observed", 22) == 0) {
+                    /* 修复（2026-09-12 真机对比偶然发现）：原 n==21 与实际
+                     * 长度 22 不符，此枚举自冻结起从未匹配成功（死枚举），
+                     * fixture 也从未覆盖。 */
                     out->kind = CDT_SOURCE_CODEX_DESKTOP_OBSERVED;
                 } else if (n == 14 && memcmp(tmp, "zcode_observed", 14) == 0) {
                     out->kind = CDT_SOURCE_ZCODE_OBSERVED; /* v1.1 增补 */
