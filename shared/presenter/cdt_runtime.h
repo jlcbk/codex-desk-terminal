@@ -43,14 +43,16 @@ typedef enum {
     CDT_PRESENCE_UNKNOWN = 3
 } cdt_presence_t;
 
-/* 页面：四个业务页 + LOW_BATTERY 强制页（§6；P2.3 抢占规则）*/
+/* 页面：五个业务页 + LOW_BATTERY 强制页（§6；P2.3 抢占规则；
+ * DETAILS = v1.2 增补第 6 屏（ZC4 2026-09-12），普通页循环末位 */
 typedef enum {
     CDT_PAGE_INVALID = 0,
     CDT_PAGE_NOW = 1,
     CDT_PAGE_AGENTS = 2,
     CDT_PAGE_PLAN = 3,
     CDT_PAGE_USAGE = 4,
-    CDT_PAGE_LOW_BATTERY = 5 /* 仅由本地 Power FSM 触发，不被远端/普通切换覆盖 */
+    CDT_PAGE_LOW_BATTERY = 5, /* 仅由本地 Power FSM 触发，不被远端/普通切换覆盖 */
+    CDT_PAGE_DETAILS = 6      /* 会话详情页（ZC4）：普通页，不参与电源仲裁 */
 } cdt_page_t;
 
 typedef struct {

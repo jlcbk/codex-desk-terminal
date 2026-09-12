@@ -29,6 +29,7 @@ MAX_PROJECT_BYTES = 96
 MAX_ACTIVITY_BYTES = 192     # activity 与 attention.summary 同限
 MAX_PLAN_TEXT_BYTES = 128
 MAX_LABEL_BYTES = 48
+MAX_MODEL_BYTES = 48         # v1.2：threads[].model（INTERFACES §3 增补行）
 MAX_EPOCH_BYTES = 64
 MAX_SEQ = 9007199254740991   # 2^53-1
 
@@ -106,6 +107,23 @@ def _context_of(rec: rd.ThreadRecord) -> dict:
     return {"used_tokens": used, "capacity_tokens": cap, "used_percent": percent}
 
 
+def _token_total(value) -> Optional[int]:
+    """v1.2：累计 token 归一（非负整数或 None；负值=脏数据，诚实置 None）。"""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
+
+
+def _tokens_of(rec: rd.ThreadRecord) -> dict:
+    return {
+        "input_tokens": _token_total(rec.tokens_input),
+        "output_tokens": _token_total(rec.tokens_output),
+        "cached_tokens": _token_total(rec.tokens_cached),
+    }
+
+
 def _thread_dict(rec: rd.ThreadRecord, now_mono: int, anchor_ms: int) -> dict:
     if rec.turn_started_mono is not None:
         end = rec.finished_mono if rec.turn_finished else now_mono
@@ -139,6 +157,10 @@ def _thread_dict(rec: rd.ThreadRecord, now_mono: int, anchor_ms: int) -> dict:
         "attention": attention,
         "plan": _plan_of(rec),
         "context": _context_of(rec),
+        # v1.2 可选增补：恒输出（model=None/tokens 全 null=未知）；旧端忽略。
+        "model": (clamp_utf8(rec.model, MAX_MODEL_BYTES)
+                  if isinstance(rec.model, str) else None),
+        "tokens": _tokens_of(rec),
     }
 
 

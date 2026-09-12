@@ -11,7 +11,8 @@
  *   - P2.3 强制页：电池 critical/sleep_prep 优先于 NEEDS YOU；任意 selected_page
  *     下强制页不脱离；恢复（ACTIVE/健康链路）保留普通页面、计时解冻
  *   - 导航（cdt_nav，纯逻辑）：短按子页先推进再切主页面（P2 固定行为）、
- *     四页轮换、长按只静音、低压强制页拒普通页切换、子页越界钳制
+ *     五页轮换 NOW→AGENTS→PLAN→USAGE→DETAILS→NOW（ZC4 v1.2）、
+ *     长按只静音、低压强制页拒普通页切换、子页越界钳制
  * 任何 FAIL 退出码 1。
  */
 #include <stdio.h>
@@ -464,7 +465,33 @@ static void test_nav_cycle(void)
     act = cdt_nav_key(&nav, &v, CDT_KEY_SHORT_PRESS);
     check(nav.page == CDT_PAGE_USAGE, "短按 PLAN→USAGE", "");
     act = cdt_nav_key(&nav, &v, CDT_KEY_SHORT_PRESS);
-    check(nav.page == CDT_PAGE_NOW, "短按 USAGE→NOW（轮换闭环）", "");
+    check(nav.page == CDT_PAGE_DETAILS, "短按 USAGE→DETAILS（ZC4 五页循环）", "");
+    act = cdt_nav_key(&nav, &v, CDT_KEY_SHORT_PRESS);
+    check(nav.page == CDT_PAGE_NOW, "短按 DETAILS→NOW（轮换闭环）", "");
+}
+
+static void test_nav_details(void)
+{
+    /* ZC4 v1.2：DETAILS 为合法普通页——init 接受、长按只静音、clamp 不归一。 */
+    cdt_nav_t nav;
+    cdt_view_t v = nav_view(false, 1, 1);
+    uint32_t act;
+
+    cdt_nav_init(&nav, CDT_PAGE_DETAILS);
+    check(nav.page == CDT_PAGE_DETAILS, "init(Details) 接受为普通页起点", "");
+
+    act = cdt_nav_key(&nav, &v, CDT_KEY_LONG_PRESS);
+    check((act & CDT_NAV_ACT_MUTE) && !(act & CDT_NAV_ACT_PAGE) &&
+              nav.page == CDT_PAGE_DETAILS,
+          "DETAILS 长按只静音不切页", "");
+
+    act = cdt_nav_key(&nav, &v, CDT_KEY_SHORT_PRESS);
+    check((act & CDT_NAV_ACT_PAGE) && nav.page == CDT_PAGE_NOW,
+          "DETAILS 短按回 NOW", "");
+
+    nav.page = CDT_PAGE_DETAILS;
+    check(!cdt_nav_clamp(&nav, &v) && nav.page == CDT_PAGE_DETAILS,
+          "clamp 不把 DETAILS 归一（合法普通页）", "");
 }
 
 static void test_nav_subpage_first(void)
@@ -550,6 +577,7 @@ int main(void)
     test_forced_page_priority();
     test_recovery_order();
     test_nav_cycle();
+    test_nav_details();
     test_nav_subpage_first();
     test_nav_forced_and_mute();
     test_nav_clamp();

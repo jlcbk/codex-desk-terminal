@@ -61,10 +61,22 @@ extern "C" {
 #define CDT_VIEW_WIN_LABEL_BYTES 30         /* (18/2)*3B +".."+NUL */
 #define CDT_VIEW_CONTEXT_BYTES 24           /* "CTX 100% (EST)"=14B */
 
+/* ---- ZC5：NOW 信息条 / USAGE CONTEXT 行（效果图 1/5 对齐）---- */
+#define CDT_VIEW_NOW_CTX_BYTES 20           /* "CTX 12345K"=11B */
+#define CDT_VIEW_NOW_USAGE_BYTES 24         /* "5H 100%"=7B / "QU.. 100%"=9B */
+#define CDT_VIEW_CONTEXT_LINE_BYTES 40      /* "CONTEXT 1234K / 1234K (100%)"=28B */
+
+/* ---- ZC4：DETAILS 页（v1.2 增补字段；label 由 UI 静态绘制，缺值 "--"）---- */
+#define CDT_VIEW_MODEL_MAX_COLS 24
+#define CDT_VIEW_MODEL_BYTES 40             /* (24/2)*3B +".."+NUL */
+#define CDT_VIEW_CTX_DETAIL_BYTES 40        /* "4194304K / 4194304K (100%)"=27B */
+#define CDT_VIEW_TOKEN_TEXT_BYTES 12        /* "4194304K"=8B（uint32 饱和值） */
+
 typedef struct {
     cdt_thread_state_t state;
     char state_label[CDT_VIEW_AGENTS_LABEL_BYTES]; /* ASCII 大写状态词 */
     char project[CDT_VIEW_AGENTS_PROJECT_BYTES];   /* 已截断；空 → "--" */
+    char elapsed_text[CDT_VIEW_ELAPSED_BYTES]; /* ZC5：行尾右对齐时长（终态定格） */
     bool waiting;    /* needs_you：行首 "!" 等待提醒标记 */
     bool emphasized; /* needs_you / error 行强调 */
 } cdt_agents_row_t;
@@ -110,6 +122,16 @@ typedef struct {
     bool plan_present;                   /* plan.total==0 → false（无计划，UI 隐藏行） */
     char usage_text[CDT_VIEW_USAGE_BYTES]; /* "SHORT WINDOW 42% +3"；无额度/无窗口 → "--" */
 
+    /* ---- ZC5：NOW 仪表盘（效果图 1）----
+     * PLAN mini 面板：复用 plan_steps 前 4 条（text+status）+ plan_completed /
+     * plan_total 计数；plan_present==false → 整面板隐藏（无 plan 不留空框）。
+     * 信息条两段：空串 = 隐藏该段，两段全空 → UI 整行隐藏。
+     * WAITING 仅 needs_you 显示（working 等其他状态该位空白，ZC5 语义修复）：
+     * waiting_present 由 presenter 裁决（cancelled 优先为 false）。 */
+    bool waiting_present;                        /* 非取消且 needs_you → true */
+    char now_ctx_text[CDT_VIEW_NOW_CTX_BYTES];   /* "CTX 68%"/"CTX 578K"；空=隐藏 */
+    char now_usage_text[CDT_VIEW_NOW_USAGE_BYTES]; /* "5H 72%"；空=隐藏 */
+
     /* ---- 电池（§7.1：UI 优先显示电压；百分比仅为估算）---- */
     char voltage_text[CDT_VIEW_VOLTAGE_BYTES]; /* "3.90V"；battery_valid=false → "--" */
     bool battery_valid;
@@ -145,6 +167,20 @@ typedef struct {
     cdt_usage_row_t usage_rows[CDT_MAX_USAGE_WINDOWS]; /* ≤4 窗口 */
     uint8_t usage_count;    /* 可见窗口数；available=false → 0（UI 显示 "--"） */
     char context_text[CDT_VIEW_CONTEXT_BYTES]; /* "CTX 43%" / "CTX --" */
+    /* ZC5：windows 列表下方 CONTEXT 行（效果图 5）。capacity+used 已知 →
+     * "CONTEXT 176K / 258K (68%)"（百分比取可信 used_percent，缺则由
+     * used/capacity 计算）；仅 used → "CONTEXT 578K TOKENS"；全无 →
+     * "CONTEXT --"（与页内其他缺值行风格一致）。 */
+    char context_line[CDT_VIEW_CONTEXT_LINE_BYTES];
+
+    /* ---- ZC4：DETAILS 页数据（v1.2 会话级字段；全部缺值 → "--"，不编造）---- */
+    char model_text[CDT_VIEW_MODEL_BYTES]; /* 选中线程 model（列预算截断） */
+    /* CONTEXT：capacity+used+percent 全知 → "176K / 258K (68%)"；仅 used →
+     * "578K TOKENS"；全无 → "--"（累计 token 不冒充 context 百分比） */
+    char context_detail_text[CDT_VIEW_CTX_DETAIL_BYTES];
+    char tokens_in_text[CDT_VIEW_TOKEN_TEXT_BYTES];     /* K 格式化 / "--" */
+    char tokens_out_text[CDT_VIEW_TOKEN_TEXT_BYTES];
+    char tokens_cached_text[CDT_VIEW_TOKEN_TEXT_BYTES];
 } cdt_view_t;
 
 #ifdef __cplusplus

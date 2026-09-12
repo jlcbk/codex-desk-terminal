@@ -169,6 +169,93 @@ static void fmt_duration(char *dst, size_t dstsz, uint64_t ms)
     else snprintf(dst, dstsz, "%02u:%02u", (unsigned)m, (unsigned)s);
 }
 
+/* v1.2：token 计数 → K 格式化（"82K"）；≥1MiB 用 M；向下取整不编造精度。
+ * 32 位饱和上限 4294967295 → "4095M"。*/
+static void fmt_tokens_k(char *dst, size_t dstsz, uint32_t v)
+{
+    if (v >= 1048576u) {
+        snprintf(dst, dstsz, "%uM", (unsigned)(v / 1048576u));
+    }
+    else if (v >= 1024u) {
+        snprintf(dst, dstsz, "%uK", (unsigned)(v / 1024u));
+    }
+    else {
+        snprintf(dst, dstsz, "%u", (unsigned)v);
+    }
+}
+
+/* ZC4 DETAILS 行：CONTEXT 详情与三路累计 token（缺值 "--"，不编造）。*/
+static void fill_details(const cdt_thread_t *th, cdt_view_t *view)
+{
+    if (th == NULL) {
+        set_str(view->model_text, sizeof(view->model_text), "--");
+        set_str(view->context_detail_text, sizeof(view->context_detail_text), "--");
+        set_str(view->tokens_in_text, sizeof(view->tokens_in_text), "--");
+        set_str(view->tokens_out_text, sizeof(view->tokens_out_text), "--");
+        set_str(view->tokens_cached_text, sizeof(view->tokens_cached_text), "--");
+        return;
+    }
+
+    if (th->model_present && th->model[0] != '\0') {
+        trunc_cols(view->model_text, sizeof(view->model_text), th->model,
+                   CDT_VIEW_MODEL_MAX_COLS);
+    }
+    else {
+        set_str(view->model_text, sizeof(view->model_text), "--");
+    }
+
+    if (th->context.used_percent_present && th->context.used_tokens_present &&
+        th->context.capacity_tokens_present) {
+        char used_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+        char cap_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+        unsigned pct = (unsigned)(th->context.used_percent + 0.5); /* 四舍五入显示 */
+
+        if (pct > 100u) pct = 100u;
+        fmt_tokens_k(used_k, sizeof(used_k),
+                     (th->context.used_tokens > (int64_t)UINT32_MAX)
+                         ? UINT32_MAX : (uint32_t)th->context.used_tokens);
+        fmt_tokens_k(cap_k, sizeof(cap_k),
+                     (th->context.capacity_tokens > (int64_t)UINT32_MAX)
+                         ? UINT32_MAX : (uint32_t)th->context.capacity_tokens);
+        snprintf(view->context_detail_text, sizeof(view->context_detail_text),
+                 "%s / %s (%u%%)", used_k, cap_k, pct);
+    }
+    else if (th->context.used_tokens_present) {
+        char used_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+
+        fmt_tokens_k(used_k, sizeof(used_k),
+                     (th->context.used_tokens > (int64_t)UINT32_MAX)
+                         ? UINT32_MAX : (uint32_t)th->context.used_tokens);
+        snprintf(view->context_detail_text, sizeof(view->context_detail_text),
+                 "%s TOKENS", used_k);
+    }
+    else {
+        set_str(view->context_detail_text, sizeof(view->context_detail_text), "--");
+    }
+
+    if (th->tokens_present && th->input_tokens_present) {
+        fmt_tokens_k(view->tokens_in_text, sizeof(view->tokens_in_text),
+                     th->input_tokens);
+    }
+    else {
+        set_str(view->tokens_in_text, sizeof(view->tokens_in_text), "--");
+    }
+    if (th->tokens_present && th->output_tokens_present) {
+        fmt_tokens_k(view->tokens_out_text, sizeof(view->tokens_out_text),
+                     th->output_tokens);
+    }
+    else {
+        set_str(view->tokens_out_text, sizeof(view->tokens_out_text), "--");
+    }
+    if (th->tokens_present && th->cached_tokens_present) {
+        fmt_tokens_k(view->tokens_cached_text, sizeof(view->tokens_cached_text),
+                     th->cached_tokens);
+    }
+    else {
+        set_str(view->tokens_cached_text, sizeof(view->tokens_cached_text), "--");
+    }
+}
+
 static const char *status_label_of(cdt_thread_state_t st)
 {
     switch (st) {
@@ -300,6 +387,7 @@ void cdt_present(const cdt_app_state_t *state,
         set_str(view->elapsed_text, sizeof(view->elapsed_text), "--");
         set_str(view->waiting_text, sizeof(view->waiting_text), "--");
         set_str(view->usage_text, sizeof(view->usage_text), "--");
+        fill_details(NULL, view);
         return;
     }
 
@@ -313,6 +401,7 @@ void cdt_present(const cdt_app_state_t *state,
         set_str(view->activity, sizeof(view->activity), "--");
         set_str(view->elapsed_text, sizeof(view->elapsed_text), "--");
         set_str(view->waiting_text, sizeof(view->waiting_text), "--");
+        fill_details(NULL, view);
         /* 额度独立于线程，仍按 usage 显示 */
         goto usage_line;
     }
@@ -332,6 +421,13 @@ void cdt_present(const cdt_app_state_t *state,
         view->status_emphasized = (th->state == CDT_THREAD_STATE_NEEDS_YOU ||
                                    th->state == CDT_THREAD_STATE_ERROR);
     }
+
+    /* ---- ZC5：WAITING 显示语义（效果图 1）----
+     * 仅 needs_you 且未取消才显示 WAITING 段；working/thinking 等其他状态该位
+     * 空白（修复 working 也显示 WAITING 的语义瑕疵）。waiting_text 数值仍照常
+     * 填充（数据与显示分离，manifest 语义不变）。 */
+    view->waiting_present = (!view->cancelled &&
+                             th->state == CDT_THREAD_STATE_NEEDS_YOU);
 
     /* ---- P2.2：AGENTS 行（全部可见线程按 §6 排序：needs_you > error >
      * working/thinking > done > idle；同级 updated_at 降序、id 升序。
@@ -371,6 +467,13 @@ void cdt_present(const cdt_app_state_t *state,
             row->waiting = (src->state == CDT_THREAD_STATE_NEEDS_YOU);
             row->emphasized = (src->state == CDT_THREAD_STATE_NEEDS_YOU ||
                                src->state == CDT_THREAD_STATE_ERROR);
+            /* ZC5：AGENTS 行尾右对齐时长（效果图 3）——与 NOW 时长同规则：
+             * fresh 推进、终态（end_reason 非空）定格在快照基值。此刻 delta_ms
+             * 尚未被下方选中线程的终态规则改写，仍是原始 fresh 增量。 */
+            fmt_duration(row->elapsed_text, sizeof(row->elapsed_text),
+                         (uint64_t)src->elapsed_ms +
+                             (src->end_reason == CDT_END_REASON_NULL
+                                  ? (uint64_t)delta_ms : 0u));
         }
         view->agents_pages = (uint8_t)((n + CDT_VIEW_ROWS_PER_PAGE - 1) /
                                        CDT_VIEW_ROWS_PER_PAGE);
@@ -405,6 +508,9 @@ void cdt_present(const cdt_app_state_t *state,
                  (uint64_t)th->elapsed_ms + delta_ms);
     fmt_duration(view->waiting_text, sizeof(view->waiting_text),
                  (uint64_t)th->waiting_ms + delta_ms);
+
+    /* ---- ZC4：DETAILS 页行数据（v1.2 会话级 model/tokens + context 详情）---- */
+    fill_details(th, view);
 
     /* ---- P2.2：PLAN 页步骤（原始顺序；只数 completed；分页计数）----
      * NOW 摘要 "PLAN c/t" 与 PLAN 页共用同一个 completed 计数。 */
@@ -507,6 +613,102 @@ usage_line:
         }
         else {
             set_str(view->context_text, sizeof(view->context_text), "CTX --");
+        }
+
+        /* ---- ZC5：NOW 信息条（效果图 1）。左段 CTX：可信百分比优先；
+         * capacity+used 已知（无百分比）→ 由 used/capacity 计算百分比；
+         * 仅 used → K 格式（明确是 token 计数，不冒充百分比）；
+         * 全无 → 空串（UI 隐藏该段）。右段见下。 ---- */
+        if (th != NULL && th->context.used_percent_present) {
+            unsigned pct = (unsigned)(th->context.used_percent + 0.5);
+            if (pct > 100u) pct = 100u;
+            snprintf(view->now_ctx_text, sizeof(view->now_ctx_text), "CTX %u%%", pct);
+        }
+        else if (th != NULL && th->context.capacity_tokens_present &&
+                 th->context.used_tokens_present && th->context.capacity_tokens > 0) {
+            unsigned pct = (unsigned)((double)th->context.used_tokens * 100.0 /
+                                      (double)th->context.capacity_tokens + 0.5);
+            if (pct > 100u) pct = 100u;
+            snprintf(view->now_ctx_text, sizeof(view->now_ctx_text), "CTX %u%%", pct);
+        }
+        else if (th != NULL && th->context.used_tokens_present) {
+            char kbuf[CDT_VIEW_TOKEN_TEXT_BYTES];
+
+            fmt_tokens_k(kbuf, sizeof(kbuf),
+                         (th->context.used_tokens > (int64_t)UINT32_MAX)
+                             ? UINT32_MAX : (uint32_t)th->context.used_tokens);
+            snprintf(view->now_ctx_text, sizeof(view->now_ctx_text), "CTX %s", kbuf);
+        }
+        else {
+            view->now_ctx_text[0] = '\0';
+        }
+
+        /* ---- ZC5：NOW 信息条右段：首窗口短词 + 可信百分比（效果图 1）。
+         * 短词压缩：整小时窗口（duration_mins 整除 60 且 ≥60）→ "5H"；
+         * 否则取 label 前 4 字符（码点安全，截断补 ".."）。
+         * percent null / 无额度 → 空串（UI 隐藏该段）。 ---- */
+        if (state->usage.available && state->usage.window_count > 0 &&
+            state->usage.windows[0].used_percent_present) {
+            const cdt_usage_window_t *w0 = &state->usage.windows[0];
+            char short_label[CDT_VIEW_NOW_USAGE_BYTES];
+            unsigned pct = (unsigned)(w0->used_percent + 0.5);
+
+            if (pct > 100u) pct = 100u;
+            if (w0->duration_mins >= 60u && (w0->duration_mins % 60u) == 0u) {
+                snprintf(short_label, sizeof(short_label), "%uH",
+                         (unsigned)(w0->duration_mins / 60u));
+            }
+            else {
+                trunc_cols(short_label, sizeof(short_label), w0->label, 4);
+            }
+            snprintf(view->now_usage_text, sizeof(view->now_usage_text), "%s %u%%",
+                     short_label, pct);
+        }
+        else {
+            view->now_usage_text[0] = '\0';
+        }
+
+        /* ---- ZC5：USAGE CONTEXT 行（效果图 5）。capacity+used 已知 →
+         * "CONTEXT 176K / 258K (68%)"（百分比取可信 used_percent，缺则由
+         * used/capacity 计算）；仅 used → "CONTEXT 578K TOKENS"；全无 →
+         * "CONTEXT --"（与页内其他缺值行风格一致）。 ---- */
+        if (th != NULL && th->context.used_tokens_present &&
+            th->context.capacity_tokens_present) {
+            char used_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+            char cap_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+            unsigned pct;
+
+            fmt_tokens_k(used_k, sizeof(used_k),
+                         (th->context.used_tokens > (int64_t)UINT32_MAX)
+                             ? UINT32_MAX : (uint32_t)th->context.used_tokens);
+            fmt_tokens_k(cap_k, sizeof(cap_k),
+                         (th->context.capacity_tokens > (int64_t)UINT32_MAX)
+                             ? UINT32_MAX : (uint32_t)th->context.capacity_tokens);
+            if (th->context.used_percent_present) {
+                pct = (unsigned)(th->context.used_percent + 0.5);
+            }
+            else if (th->context.capacity_tokens > 0) {
+                pct = (unsigned)((double)th->context.used_tokens * 100.0 /
+                                 (double)th->context.capacity_tokens + 0.5);
+            }
+            else {
+                pct = 0u; /* capacity==0：无分母，不猜百分比基数 */
+            }
+            if (pct > 100u) pct = 100u;
+            snprintf(view->context_line, sizeof(view->context_line),
+                     "CONTEXT %s / %s (%u%%)", used_k, cap_k, pct);
+        }
+        else if (th != NULL && th->context.used_tokens_present) {
+            char used_k[CDT_VIEW_TOKEN_TEXT_BYTES];
+
+            fmt_tokens_k(used_k, sizeof(used_k),
+                         (th->context.used_tokens > (int64_t)UINT32_MAX)
+                             ? UINT32_MAX : (uint32_t)th->context.used_tokens);
+            snprintf(view->context_line, sizeof(view->context_line),
+                     "CONTEXT %s TOKENS", used_k);
+        }
+        else {
+            set_str(view->context_line, sizeof(view->context_line), "CONTEXT --");
         }
     }
 

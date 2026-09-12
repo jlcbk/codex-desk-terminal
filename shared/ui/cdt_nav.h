@@ -1,7 +1,8 @@
 /*
  * cdt_nav.h — KEY 导航纯逻辑（P2.2，A2）
  *
- * 契约：docs/DEVELOPMENT_PLAN.md §6 KEY 初值行（短按轮换 NOW→AGENTS→PLAN→USAGE；
+ * 契约：docs/DEVELOPMENT_PLAN.md §6 KEY 初值行（短按轮换
+ * NOW→AGENTS→PLAN→USAGE→DETAILS（ZC4 v1.2 五页）；
  * AGENTS/PLAN 超一页先推进子页再切换主页面，P2 固定该行为；长按只静音当前提醒，
  * 新 pending 可再次提醒）；docs/INTERFACES.md §4（DeviceRuntime.selected_page
  * 归设备本地；电池强制页不可被普通页切换覆盖；恢复健康连接保留当前普通页面）。
@@ -55,7 +56,8 @@ void cdt_nav_init(cdt_nav_t *nav, cdt_page_t page);
  *   - 短按 AGENTS：还有子页 → agents_page++（返回 NONE，宿主重渲染即可）；
  *     否则切 PLAN（plan_page 清零，返回 PAGE）。
  *   - 短按 PLAN：同上；末子页 → 切 USAGE。
- *   - 短按 NOW → AGENTS；短按 USAGE → NOW（轮换）。
+ *   - 短按 NOW → AGENTS；短按 USAGE → DETAILS；短按 DETAILS → NOW
+ *     （ZC4 v1.2：普通页循环 NOW→AGENTS→PLAN→USAGE→DETAILS→NOW）。
  *   - 长按：任何页只返回 MUTE，不切页。
  */
 uint32_t cdt_nav_key(cdt_nav_t *nav, const cdt_view_t *view, cdt_key_event_t ev);

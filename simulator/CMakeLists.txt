@@ -54,6 +54,7 @@ add_executable(codex-display-sim
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_plan.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_usage.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_lowbat.c"
+    "${SIM_PROJ_ROOT}/shared/ui/cdt_ui_details.c"
     "${SIM_PROJ_ROOT}/shared/ui/cdt_nav.c"
 )
 target_include_directories(codex-display-sim PRIVATE

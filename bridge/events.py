@@ -21,6 +21,8 @@
     serverRequest/resolved                  -> server_request_resolved
     （bridge 本地：用户选中线程）            -> select_thread
     （bridge 本地：上游断连/重连信号）       -> source_disconnected / source_reconnected
+    （bridge 本地：会话模型名，v1.2 增补）   -> model_info
+    （bridge 本地：会话累计 token，v1.2 增补）-> token_totals
 
 约定：
 - 事件是"已脱敏的最小字段"（INTERFACES §5 SourceAdapter 行）；summary/project 由
@@ -51,6 +53,9 @@ EVENT_SERVER_REQUEST_RESOLVED = "server_request_resolved"
 EVENT_SELECT_THREAD = "select_thread"
 EVENT_SOURCE_DISCONNECTED = "source_disconnected"
 EVENT_SOURCE_RECONNECTED = "source_reconnected"
+# v1.2 可选增补（threads[].model / threads[].tokens 的唯一来源；A0 2026-09-12）。
+EVENT_MODEL_INFO = "model_info"
+EVENT_TOKEN_TOTALS = "token_totals"
 
 # turn/completed 的 status 取值（end_reason 语义，INTERFACES §3 end_reason 行）。
 TURN_STATUS_COMPLETED = "completed"
@@ -98,6 +103,12 @@ class NormalizedEvent:
     windows: tuple = field(default=())  # (UsageWindow, ...)
     # select_thread 用：None 表示清除本地选中，回到"默认选首项"。
     select_thread_id: Optional[str] = None
+    # v1.2 增补：model_info 的 model（string|None）；token_totals 的三值
+    # （int|None，会话累计语义）。None 一律表示"未知"，绝不编造。
+    model: Optional[str] = None
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
 
     def to_dict(self) -> dict:
         """转成可写入 JSONL 的 dict；省略缺省字段，元组转列表。"""
@@ -134,6 +145,15 @@ class NormalizedEvent:
             d["windows"] = [dict(w) for w in self.windows]
         if self.type == EVENT_SELECT_THREAD:
             d["select_thread_id"] = self.select_thread_id
+        if self.type == EVENT_MODEL_INFO and self.model is not None:
+            d["model"] = self.model
+        if self.type == EVENT_TOKEN_TOTALS:
+            if self.input_tokens is not None:
+                d["input_tokens"] = self.input_tokens
+            if self.output_tokens is not None:
+                d["output_tokens"] = self.output_tokens
+            if self.cached_tokens is not None:
+                d["cached_tokens"] = self.cached_tokens
         return d
 
     @classmethod
@@ -160,6 +180,10 @@ class NormalizedEvent:
             capacity_tokens=d.get("capacity_tokens"),
             windows=tuple(dict(w) for w in d.get("windows", ())),
             select_thread_id=d.get("select_thread_id"),
+            model=d.get("model"),
+            input_tokens=d.get("input_tokens"),
+            output_tokens=d.get("output_tokens"),
+            cached_tokens=d.get("cached_tokens"),
         )
         return ev
 
@@ -245,3 +269,20 @@ def source_disconnected(at_ms: int | None = None) -> NormalizedEvent:
 
 def source_reconnected(at_ms: int | None = None) -> NormalizedEvent:
     return NormalizedEvent(EVENT_SOURCE_RECONNECTED, at_ms=at_ms)
+
+
+def model_info(thread_id: str, model: str | None, at_ms: int | None = None) -> NormalizedEvent:
+    """v1.2：会话模型名（threads[].model 唯一来源）。model=None 表示未知。"""
+    return NormalizedEvent(EVENT_MODEL_INFO, thread_id=thread_id, model=model, at_ms=at_ms)
+
+
+def token_totals(thread_id: str, input_tokens: int | None, output_tokens: int | None,
+                 cached_tokens: int | None, at_ms: int | None = None) -> NormalizedEvent:
+    """v1.2：会话累计 token（threads[].tokens 唯一来源；跨 turn 不清零）。
+
+    无 in/out 拆分能力的源（如 Codex）不发本事件，诚实保持 null，绝不拿
+    totalTokens 冒充单项。
+    """
+    return NormalizedEvent(EVENT_TOKEN_TOTALS, thread_id=thread_id,
+                           input_tokens=input_tokens, output_tokens=output_tokens,
+                           cached_tokens=cached_tokens, at_ms=at_ms)

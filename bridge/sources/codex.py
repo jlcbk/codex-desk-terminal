@@ -782,6 +782,15 @@ class CodexAdapter:
         caps["model_confirmed"] = started.get("model")
         attempt.thread_id = thread_id
 
+        # v1.2 增补（ZC4）：建线程后发一次 model_info（threads[].model 唯一来源）。
+        # 模型名=thread/start 响应确认值，缺省回退本 adapter 显式固定的 self.model
+        # （两者均为已知事实，不编造）；Codex 源无 in/out 拆分 → 不发 token_totals。
+        if thread_id:
+            confirmed = started.get("model")
+            model_name = confirmed if isinstance(confirmed, str) and confirmed else self.model
+            self._apply([ev.model_info(thread_id, model_name)],
+                        {"dir": "bridge", "note": "model_info after thread/start"})
+
         self._log_raw({"dir": "out", "method": "turn/start",
                        "payload": scrub({"params": {"threadId": thread_id,
                                                     "input": [{"type": "text",

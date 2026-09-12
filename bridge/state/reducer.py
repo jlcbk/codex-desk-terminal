@@ -51,6 +51,9 @@ class ThreadRecord:
         "pending", "turn_started_mono", "waiting_since_mono",
         "turn_finished", "finished_mono", "end_reason",
         "updated_mono", "used_tokens", "capacity_tokens",
+        # v1.2 增补：会话级模型名与累计 token（跨 turn 不清零，turn_started
+        # 不重置——会话累计语义，INTERFACES §3 threads[].model/tokens 行）。
+        "model", "tokens_input", "tokens_output", "tokens_cached",
     )
 
     def __init__(self, thread_id: str) -> None:
@@ -70,6 +73,10 @@ class ThreadRecord:
         self.updated_mono: int = 0
         self.used_tokens: Optional[int] = None
         self.capacity_tokens: Optional[int] = None
+        self.model: Optional[str] = None            # v1.2：会话模型名
+        self.tokens_input: Optional[int] = None     # v1.2：会话累计（诚实 null）
+        self.tokens_output: Optional[int] = None
+        self.tokens_cached: Optional[int] = None
 
 
 def new_internal_state() -> dict:
@@ -138,6 +145,7 @@ def reduce(state: dict, event, now_mono: int) -> dict:
         if rec is not None:
             if not (rec.turn_id == event.turn_id and not rec.turn_finished):
                 # 新 turn（含未知线程首 turn）：清旧 plan/pending/计时；不继承 DONE。
+                # 注意：model/tokens_* 是会话累计字段，此处刻意不清（v1.2）。
                 rec.turn_id = event.turn_id
                 rec.plan_total = 0
                 rec.plan_steps = []
@@ -262,6 +270,21 @@ def reduce(state: dict, event, now_mono: int) -> dict:
             rec.capacity_tokens = event.capacity_tokens
             if not rec.turn_finished:  # 迟到 usage 不复活该 turn 的排序时间
                 rec.updated_mono = now_mono
+
+    elif t == ev.EVENT_MODEL_INFO:
+        # v1.2：会话模型名。线程未见过时允许建档（adapter 在建线程后立即发送，
+        # 可能先于 thread/started 通知被 apply）；只记数据，不动状态与计时。
+        rec = _record(state, event.thread_id)
+        if rec is not None:
+            rec.model = event.model
+
+    elif t == ev.EVENT_TOKEN_TOTALS:
+        # v1.2：会话累计 token（三值各自独立，None=未知）。跨 turn 不清零。
+        rec = _record(state, event.thread_id)
+        if rec is not None:
+            rec.tokens_input = event.input_tokens
+            rec.tokens_output = event.output_tokens
+            rec.tokens_cached = event.cached_tokens
 
     elif t == ev.EVENT_RATE_LIMITS:
         state["usage"]["available"] = True

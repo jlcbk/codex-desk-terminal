@@ -434,6 +434,68 @@ static void test_attention_and_mute(void)
     check(v.muted, "runtime 静音位透传", "");
 }
 
+static void test_details_fields(void)
+{
+    /* ZC4：DETAILS 页 builder（v1.2 会话级 model/tokens + context 详情）。 */
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t *th = &s.threads[0];
+
+    /* 全量数据：CONTEXT 三值全知 → "176K / 258K (68%)"；tokens K 格式化。 */
+    th->model_present = true;
+    snprintf(th->model, sizeof(th->model), "GLM-5.3");
+    th->context.used_tokens_present = true;
+    th->context.used_tokens = 180224;   /* 176K */
+    th->context.capacity_tokens_present = true;
+    th->context.capacity_tokens = 264192; /* 258K */
+    th->context.used_percent_present = true;
+    th->context.used_percent = 68.25;
+    th->tokens_present = true;
+    th->input_tokens_present = true;
+    th->input_tokens = 84000;           /* 82K */
+    th->output_tokens_present = true;
+    th->output_tokens = 2048;
+    th->cached_tokens_present = true;
+    th->cached_tokens = 4294967295u;    /* uint32 饱和上限 → 4095M */
+
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.model_text, "GLM-5.3") == 0, "MODEL 行=会话模型名", v.model_text);
+    check(strcmp(v.context_detail_text, "176K / 258K (68%)") == 0,
+          "CONTEXT 全知 → \"176K / 258K (68%)\"", v.context_detail_text);
+    check(strcmp(v.tokens_in_text, "82K") == 0, "INPUT 84000 → \"82K\"",
+          v.tokens_in_text);
+    check(strcmp(v.tokens_out_text, "2K") == 0, "OUTPUT 2048 → \"2K\"（K 分支）",
+          v.tokens_out_text);
+    check(strcmp(v.tokens_cached_text, "4095M") == 0, "CACHED uint32 上限 → \"4095M\"",
+          v.tokens_cached_text);
+
+    /* 只有 used：→ "578K TOKENS"。 */
+    th->context.capacity_tokens_present = false;
+    th->context.used_percent_present = false;
+    th->context.used_tokens = 591872; /* 578K */
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.context_detail_text, "578K TOKENS") == 0,
+          "仅 used → \"578K TOKENS\"（累计不冒充百分比）", v.context_detail_text);
+
+    /* 旧桥（v1.2 前字段缺失）→ MODEL/tokens 全 "--"。 */
+    th->model_present = false;
+    th->tokens_present = false;
+    th->context.used_tokens_present = false;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.model_text, "--") == 0 && strcmp(v.tokens_in_text, "--") == 0 &&
+              strcmp(v.tokens_out_text, "--") == 0 &&
+              strcmp(v.tokens_cached_text, "--") == 0 &&
+              strcmp(v.context_detail_text, "--") == 0,
+          "v1.2 字段缺失 → MODEL/tokens/CONTEXT 全 \"--\"", v.model_text);
+
+    /* 无任务/无快照 → 同样 "--"（不编造）。 */
+    cdt_present(NULL, &r, 40000, &v);
+    check(strcmp(v.model_text, "--") == 0 && strcmp(v.context_detail_text, "--") == 0 &&
+              strcmp(v.tokens_in_text, "--") == 0,
+          "无快照 → DETAILS 行 \"--\"", v.model_text);
+}
+
 int main(void)
 {
     test_priority_low_battery();
@@ -447,6 +509,7 @@ int main(void)
     test_duration_format();
     test_truncation();
     test_attention_and_mute();
+    test_details_fields();
     printf("\n汇总: %d PASS, %d FAIL\n", passes, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -53,6 +53,7 @@ extern "C" {
 #define CDT_MAX_ATTENTION_SUMMARY_BYTES 192
 #define CDT_MAX_PLAN_TEXT_BYTES 128
 #define CDT_MAX_USAGE_LABEL_BYTES 48
+#define CDT_MAX_MODEL_BYTES 48        /* v1.2 增补：threads[].model（A0 2026-09-12） */
 
 /* 数组上限与消息预算。来源 §3 threads/plan/usage/完整消息 行。 */
 #define CDT_MAX_THREADS 8
@@ -217,6 +218,19 @@ typedef struct {
     cdt_attention_t attention;
     cdt_plan_t plan; /* 不为 null；steps 可为空数组 */
     cdt_context_t context;
+    /* ---- v1.2 可选增补（A0 2026-09-12，schema_version 仍为 1）----
+     * 旧桥不发送：*_present=false，UI 显示 "--"。语义=会话级（跨 turn 不清零，
+     * Bridge 侧 turn_started 不重置）；tokens 三值 >2^32 时解析器饱和到
+     * UINT32_MAX（不拒包），负值/缺键仍属类型错误（ERR_FIELD，拒绝整包）。 */
+    bool model_present;                /* false == 字段缺失或 JSON null */
+    char model[CDT_MAX_MODEL_BYTES + 1];
+    bool tokens_present;               /* false == tokens 对象缺失 */
+    bool input_tokens_present;         /* false == JSON null */
+    uint32_t input_tokens;             /* 饱和处理：>2^32-1 钳到 UINT32_MAX */
+    bool output_tokens_present;
+    uint32_t output_tokens;
+    bool cached_tokens_present;
+    uint32_t cached_tokens;
 } cdt_thread_t;
 
 /* §2 AppState 顶层对象（AppState 全量快照，§1） */

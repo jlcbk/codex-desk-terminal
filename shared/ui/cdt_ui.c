@@ -19,18 +19,19 @@ static bool g_have_view;
 
 static void set_page_visible(cdt_page_t page)
 {
-    lv_obj_t *roots[6] = { NULL }; /* 以 cdt_page_t 枚举值索引 */
+    lv_obj_t *roots[7] = { NULL }; /* 以 cdt_page_t 枚举值索引 */
 
     roots[CDT_PAGE_NOW] = cdt_ui_now_root();
     roots[CDT_PAGE_AGENTS] = cdt_ui_agents_root();
     roots[CDT_PAGE_PLAN] = cdt_ui_plan_root();
     roots[CDT_PAGE_USAGE] = cdt_ui_usage_root();
     roots[CDT_PAGE_LOW_BATTERY] = cdt_ui_lowbat_root();
+    roots[CDT_PAGE_DETAILS] = cdt_ui_details_root(); /* ZC4 v1.2 第 6 屏 */
 
-    if (page <= CDT_PAGE_INVALID || page > CDT_PAGE_LOW_BATTERY) {
+    if (page <= CDT_PAGE_INVALID || page > CDT_PAGE_DETAILS) {
         page = CDT_PAGE_NOW; /* 防御 */
     }
-    for (int i = 1; i <= CDT_PAGE_LOW_BATTERY; i++) {
+    for (int i = 1; i <= CDT_PAGE_DETAILS; i++) {
         lv_obj_t *r = roots[i];
         if (r == NULL) continue;
         if ((cdt_page_t)i == page) lv_obj_remove_flag(r, LV_OBJ_FLAG_HIDDEN);
@@ -57,6 +58,7 @@ void cdt_ui_init(void)
     cdt_ui_plan_create();
     cdt_ui_usage_create();
     cdt_ui_lowbat_create();
+    cdt_ui_details_create();
 
     cdt_nav_init(&g_nav, CDT_PAGE_NOW);
     g_have_view = false;
@@ -82,6 +84,9 @@ void cdt_ui_apply_nav(const cdt_view_t *view, const cdt_nav_t *nav)
             break;
         case CDT_PAGE_USAGE:
             cdt_ui_usage_apply(view);
+            break;
+        case CDT_PAGE_DETAILS:
+            cdt_ui_details_apply(view);
             break;
         case CDT_PAGE_LOW_BATTERY:
             cdt_ui_lowbat_apply(view);

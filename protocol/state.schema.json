@@ -239,6 +239,35 @@
                 "description": "§3 usage 行：百分比 0-100 或 null（A0 冻结确认同样适用于 context.used_percent）。"
               }
             }
+          },
+          "model": {
+            "type": ["string", "null"],
+            "maxLength": 48,
+            "cdt-utf8-max-bytes": 48,
+            "description": "v1.2 可选增补（A0 2026-09-12，ZC4）：会话模型名（如 GLM-5.3），≤48 UTF-8 字节或 null；不在 required 中，旧端按未知附加字段忽略（§8 兼容矩阵）。"
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["input_tokens", "output_tokens", "cached_tokens"],
+            "description": "v1.2 可选增补（A0 2026-09-12，ZC4）：会话累计 token（跨 turn 不清零）。对象存在时三键必填，各值为非负整数或 null；设备端 >2^32 饱和到 uint32 上限。不在 required 中，旧端忽略；不接受 null 整体（类型错误拒绝整包）。",
+            "properties": {
+              "input_tokens": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "输入 token 累计（会话维度）或 null。"
+              },
+              "output_tokens": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "输出 token 累计（会话维度）或 null。"
+              },
+              "cached_tokens": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "缓存命中 token 累计（会话维度）或 null。"
+              }
+            }
           }
         }
       }

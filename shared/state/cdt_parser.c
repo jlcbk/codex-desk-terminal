@@ -85,6 +85,27 @@ static cdtj_err_t rd_uint(cdt_json_t *j, uint64_t *out)
     return CDT_PARSE_OK;
 }
 
+/* v1.2 增补：非负整数或 null → uint32（饱和不拒包）。
+ * >2^32-1 钳到 UINT32_MAX（A0 裁决 2026-09-12：累计 token 可能超 32 位，
+ * 饱和显示优于整包拒绝）；负值仍属类型错误（ERR_FIELD）。*/
+static cdtj_err_t rd_token_null(cdt_json_t *j, bool *present, uint32_t *out)
+{
+    int64_t v;
+    cdtj_err_t e = rd_int_null(j, present, &v);
+    if (e != CDT_PARSE_OK) {
+        return e;
+    }
+    if (!*present) {
+        *out = 0;
+        return CDT_PARSE_OK;
+    }
+    if (v < 0) {
+        return CDT_PARSE_ERR_FIELD;
+    }
+    *out = (v > (int64_t)UINT32_MAX) ? UINT32_MAX : (uint32_t)v;
+    return CDT_PARSE_OK;
+}
+
 /* 0..100 数值（int/float），可为 null。*/
 static cdtj_err_t rd_percent_null(cdt_json_t *j, bool *present, double *out)
 {
@@ -543,10 +564,75 @@ static cdtj_err_t parse_context(cdt_json_t *j, cdt_context_t *out)
     return seen == 0x7 ? CDT_PARSE_OK : CDT_PARSE_ERR_FIELD;
 }
 
+/* v1.2 可选对象 threads[].tokens：三键必填（对象存在时），各值非负整数或 null，
+ * >2^32 饱和；整体 null 不接受（ERR_FIELD）。未知内部键仍走 skip（前向兼容）。*/
+static cdtj_err_t parse_tokens(cdt_json_t *j, cdt_thread_t *out)
+{
+    uint32_t seen = 0; /* input=1 output=2 cached=4 */
+    key_t k;
+    cdtj_err_t e = cdtj_expect(j, '{');
+    if (e != CDT_PARSE_OK) {
+        return e;
+    }
+    out->tokens_present = true;
+    if (cdtj_peek(j) == '}') {
+        j->p++;
+        return CDT_PARSE_ERR_FIELD; /* 缺全部必填键 */
+    }
+    for (;;) {
+        e = read_key(j, &k);
+        if (e != CDT_PARSE_OK) {
+            return e;
+        }
+        e = cdtj_expect(j, ':');
+        if (e != CDT_PARSE_OK) {
+            return e;
+        }
+        if (key_is(&k, "input_tokens")) {
+            if (seen & 1) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 1;
+            e = rd_token_null(j, &out->input_tokens_present, &out->input_tokens);
+        } else if (key_is(&k, "output_tokens")) {
+            if (seen & 2) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 2;
+            e = rd_token_null(j, &out->output_tokens_present, &out->output_tokens);
+        } else if (key_is(&k, "cached_tokens")) {
+            if (seen & 4) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 4;
+            e = rd_token_null(j, &out->cached_tokens_present, &out->cached_tokens);
+        } else {
+            e = cdtj_skip_value(j);
+        }
+        if (e != CDT_PARSE_OK) {
+            return e;
+        }
+        {
+            int c = cdtj_peek(j);
+            if (c == ',') {
+                j->p++;
+                continue;
+            }
+            if (c == '}') {
+                j->p++;
+                break;
+            }
+            return CDT_PARSE_ERR_FIELD;
+        }
+    }
+    return seen == 0x7 ? CDT_PARSE_OK : CDT_PARSE_ERR_FIELD;
+}
+
 static cdtj_err_t parse_thread(cdt_json_t *j, cdt_thread_t *out)
 {
     /* bit: id=1 turn=2 project=4 state=8 activity=16 updated=32 elapsed=64
-     *      waiting=128 end_reason=256 attention=512 plan=1024 context=2048 */
+     *      waiting=128 end_reason=256 attention=512 plan=1024 context=2048
+     * v1.2 可选位（不计入必填掩码）：model=0x1000 tokens=0x2000 */
     uint32_t seen = 0;
     key_t k;
     cdtj_err_t e = cdtj_expect(j, '{');
@@ -696,8 +782,36 @@ static cdtj_err_t parse_thread(cdt_json_t *j, cdt_thread_t *out)
             }
             seen |= 2048;
             e = parse_context(j, &out->context);
+        } else if (key_is(&k, "model")) {
+            /* v1.2 可选增补：string|null；缺失/null → model_present=false。 */
+            if (seen & 0x1000u) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 0x1000u;
+            if (cdtj_peek(j) == 'n') {
+                e = cdtj_expect_null(j);
+            } else {
+                e = rd_str(j, out->model, CDT_MAX_MODEL_BYTES + 1);
+                if (e == CDT_PARSE_OK) {
+                    out->model_present = true;
+                }
+            }
+        } else if (key_is(&k, "tokens")) {
+            /* v1.2 可选增补：对象（三键必填）；整体 null 非法。 */
+            if (seen & 0x2000u) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 0x2000u;
+            if (cdtj_peek(j) == 'n') {
+                e = cdtj_expect_null(j);
+                if (e == CDT_PARSE_OK) {
+                    return CDT_PARSE_ERR_FIELD; /* tokens 不接受 null 整体 */
+                }
+            } else {
+                e = parse_tokens(j, out);
+            }
         } else {
-            e = cdtj_skip_value(j);
+            e = cdtj_skip_value(j); /* 未知字段跳过路径不回归（§3 前向兼容） */
         }
         if (e != CDT_PARSE_OK) {
             return e;
@@ -715,7 +829,7 @@ static cdtj_err_t parse_thread(cdt_json_t *j, cdt_thread_t *out)
             return CDT_PARSE_ERR_FIELD;
         }
     }
-    return seen == 0xFFF ? CDT_PARSE_OK : CDT_PARSE_ERR_FIELD;
+    return (seen & 0xFFFu) == 0xFFFu ? CDT_PARSE_OK : CDT_PARSE_ERR_FIELD;
 }
 
 static cdtj_err_t parse_usage(cdt_json_t *j, cdt_usage_t *out)

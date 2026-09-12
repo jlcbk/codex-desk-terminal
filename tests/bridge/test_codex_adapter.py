@@ -290,21 +290,26 @@ def test_happy_path_mapping(validator, fake_server_path, tmp_path):
     assert [s["seq"] for s in snaps] == list(range(1, len(snaps) + 1))
 
     # 真实 ephemeral turn 的完整状态流转（working → needs_you → … → done）
+    # （4, None）= v1.2 增补：thread/start 后 adapter 发 model_info（ZC4）。
     assert flow_of(snaps) == [
         (1, None),      # source_reconnected
         (2, None),      # 启动 account/rateLimits/read → usage
         (3, "idle"),    # thread/started
-        (4, "working"),  # thread/status/changed active
-        (5, "working"),  # turn/started
-        (6, "working"),  # item/started commandExecution
-        (7, "needs_you"),  # 审批请求（server→client，只接收）
-        (8, "needs_you"),  # waitingOnApproval 确认（不改变等待）
-        (9, "working"),  # serverRequest/resolved → 恢复
-        (10, "working"),  # item/completed
-        (11, "working"),  # tokenUsage → context
-        (12, "working"),  # rateLimits/updated → usage 刷新
-        (13, "done"),    # turn/completed
+        (4, "idle"),    # model_info（v1.2：threads[].model；状态不变）
+        (5, "working"),  # thread/status/changed active
+        (6, "working"),  # turn/started
+        (7, "working"),  # item/started commandExecution
+        (8, "needs_you"),  # 审批请求（server→client，只接收）
+        (9, "needs_you"),  # waitingOnApproval 确认（不改变等待）
+        (10, "working"),  # serverRequest/resolved → 恢复
+        (11, "working"),  # item/completed
+        (12, "working"),  # tokenUsage → context
+        (13, "working"),  # rateLimits/updated → usage 刷新
+        (14, "done"),    # turn/completed
     ]
+
+    # v1.2：建线程后 model_info 已落快照（model=thread/start 响应确认值）。
+    assert snaps[3]["threads"][0]["model"] == "gpt-5.6-sol"
 
     for snap in snaps:
         errors = list(validator.iter_errors(snap))
@@ -314,26 +319,26 @@ def test_happy_path_mapping(validator, fake_server_path, tmp_path):
         assert snap["source"]["connected"] is True and snap["source"]["stale"] is False
 
     # 审批 → needs_you（pending 计数 + 脱敏命令摘要）
-    need = snaps[6]
+    need = snaps[7]
     attention = need["threads"][0]["attention"]
     assert attention["pending_count"] == 1
     assert "uname -a" in attention["summary"]
 
     # resolved → 恢复 working，等待清空
-    recovered = snaps[8]
+    recovered = snaps[9]
     assert recovered["threads"][0]["state"] == "working"
     assert recovered["threads"][0]["attention"] is None
     assert recovered["threads"][0]["waiting_ms"] == 0
 
     # tokenUsage → context（totalTokens 含系统开销，仍按现状呈现）
-    context = snaps[10]["threads"][0]["context"]
+    context = snaps[11]["threads"][0]["context"]
     assert context == {"used_tokens": 23017, "capacity_tokens": 258400,
                        "used_percent": 8.9}
 
     # rateLimits → usage 双窗口（启动 read 24%/300min + 22%/10080min；updated 29%）
     assert [(w["used_percent"], w["duration_mins"]) for w in snaps[1]["usage"]["windows"]] \
         == [(24.0, 300), (22.0, 10080)]
-    assert snaps[11]["usage"]["windows"][0]["used_percent"] == 29.0
+    assert snaps[12]["usage"]["windows"][0]["used_percent"] == 29.0
     assert snaps[-1]["usage"]["available"] is True
 
     # 终态 done

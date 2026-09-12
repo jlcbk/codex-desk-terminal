@@ -61,7 +61,7 @@ static void usage(const char *prog)
            "  --battery-mv <N>             battery millivolts (default 3900)\n"
            "  --battery-seq <mv>@<ms>,...  battery samples through the real Power FSM (P5.1)\n"
            "  --link-state <connected|stale|disconnected>  (default connected)\n"
-           "  --page <now|agents|plan|usage>  initial normal page (default now)\n"
+           "  --page <now|agents|plan|usage|details>  initial normal page (default now)\n"
            "  --scenario <file.jsonl>      injection JSONL replay (INTERFACES #4; full\n"
            "                               pre-validation; deterministic virtual clock)\n"
            "  --capture-dir <dir>          frames + manifest.jsonl per scenario subdir (UI_CONTRACT #3)\n"
@@ -79,7 +79,8 @@ static cdt_page_t parse_page(const char *s)
     if (strcmp(s, "agents") == 0) return CDT_PAGE_AGENTS;
     if (strcmp(s, "plan") == 0) return CDT_PAGE_PLAN;
     if (strcmp(s, "usage") == 0) return CDT_PAGE_USAGE;
-    fprintf(stderr, "[sim] ERROR: --page must be now|agents|plan|usage\n");
+    if (strcmp(s, "details") == 0) return CDT_PAGE_DETAILS; /* ZC4 v1.2 */
+    fprintf(stderr, "[sim] ERROR: --page must be now|agents|plan|usage|details\n");
     exit(2);
 }
 
@@ -1098,6 +1099,7 @@ static const char *sc_page_name(const cdt_view_t *v)
         case CDT_PAGE_PLAN: return "plan";
         case CDT_PAGE_USAGE: return "usage";
         case CDT_PAGE_LOW_BATTERY: return "low_battery";
+        case CDT_PAGE_DETAILS: return "details";
         default: return "now";
     }
 }

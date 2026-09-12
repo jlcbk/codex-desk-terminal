@@ -297,11 +297,115 @@ static void test_zcode_kind(void)
     }
 }
 
+static void test_v12_thread_fields(void)
+{
+    /* v1.2 增补（ZC4）：threads[].model / threads[].tokens 可选字段。
+     * 接受/缺失(旧桥兼容)/null 语义/越界饱和/未知字段跳过不回归。 */
+    static const char *V12_TMPL =
+        "{\"schema_version\":1,\"kind\":\"state\",\"bridge_epoch\":\"t-1\",\"seq\":1,"
+        "\"generated_at_ms\":null,"
+        "\"source\":{\"kind\":\"mock\",\"connected\":true,\"stale\":false,\"last_event_at_ms\":null},"
+        "\"selected_thread_id\":\"a\",\"threads_total\":1,\"threads_truncated\":false,"
+        "\"threads\":[{\"id\":\"a\",\"turn_id\":null,\"project\":\"p\",\"state\":\"working\","
+        "\"activity\":\"x\",\"updated_at_ms\":null,\"elapsed_ms\":0,\"waiting_ms\":0,"
+        "\"end_reason\":null,\"attention\":null,"
+        "\"plan\":{\"total\":0,\"truncated\":false,\"steps\":[]},"
+        "\"context\":{\"used_tokens\":null,\"capacity_tokens\":null,\"used_percent\":null}"
+        "%s}],"
+        "\"usage\":{\"available\":false,\"updated_at_ms\":null,\"windows_total\":0,"
+        "\"windows_truncated\":false,\"windows\":[]}}";
+    cdt_state_store_t st;
+    char extra[256];
+    char buf[1280];
+    char detail[160];
+    cdt_parse_result_t r;
+    const cdt_app_state_t *snap;
+
+    /* 1) model+tokens 全量：接受；>2^32 饱和；tokens 内未知键跳过。 */
+    cdt_state_store_init(&st);
+    snprintf(extra, sizeof(extra),
+             ",\"model\":\"GLM-5.3\",\"tokens\":{\"input_tokens\":10000000000,"
+             "\"output_tokens\":84000,\"cached_tokens\":null,\"future_k\":1}");
+    snprintf(buf, sizeof(buf), V12_TMPL, extra);
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snprintf(detail, sizeof(detail), "实际码=%d", (int)r);
+    check(r == CDT_PARSE_OK, "v1.2 model+tokens 接受（内未知键跳过）", detail);
+    snap = cdt_state_store_snapshot(&st);
+    check(snap != NULL && snap->thread_count == 1 && snap->threads[0].model_present &&
+              strcmp(snap->threads[0].model, "GLM-5.3") == 0,
+          "model 存储正确", detail);
+    check(snap->threads[0].tokens_present && snap->threads[0].input_tokens_present &&
+              snap->threads[0].input_tokens == UINT32_MAX,
+          "input_tokens 10^10 >2^32 → 饱和 UINT32_MAX", "");
+    check(snap->threads[0].output_tokens_present &&
+              snap->threads[0].output_tokens == 84000,
+          "output_tokens 84000 原样存储", "");
+    check(!snap->threads[0].cached_tokens_present,
+          "cached_tokens null → absent（显示 --）", "");
+
+    /* 2) 字段整体缺失（旧桥快照）→ 接受且 absent。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, "");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snap = cdt_state_store_snapshot(&st);
+    check(r == CDT_PARSE_OK && snap != NULL && !snap->threads[0].model_present &&
+              !snap->threads[0].tokens_present,
+          "v1.2 字段缺失（旧桥）→ OK 且 absent", "");
+
+    /* 3) model=null → 接受且 absent。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, ",\"model\":null");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snap = cdt_state_store_snapshot(&st);
+    check(r == CDT_PARSE_OK && snap != NULL && !snap->threads[0].model_present,
+          "model null → OK 且 absent", "");
+
+    /* 4) tokens 缺必填键 → ERR_FIELD（对象存在时三键必填）。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, ",\"tokens\":{\"input_tokens\":1}");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_FIELD, "tokens 缺键 → ERR_FIELD", "");
+
+    /* 5) tokens 负值 → ERR_FIELD。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL,
+             ",\"tokens\":{\"input_tokens\":-1,\"output_tokens\":null,"
+             "\"cached_tokens\":null}");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_FIELD, "tokens 负值 → ERR_FIELD", "");
+
+    /* 6) model 超 48 字节 → ERR_SIZE。 */
+    cdt_state_store_init(&st);
+    snprintf(extra, sizeof(extra), ",\"model\":\"%050d\"", 1);
+    snprintf(buf, sizeof(buf), V12_TMPL, extra);
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_SIZE, "model 49 字节 → ERR_SIZE", "");
+
+    /* 7) tokens 整体 null → ERR_FIELD（类型错误）。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, ",\"tokens\":null");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_FIELD, "tokens null 整体 → ERR_FIELD", "");
+
+    /* 8) model 重复出现 → ERR_FIELD。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, ",\"model\":\"a\",\"model\":\"b\"");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_FIELD, "model 重复 → ERR_FIELD", "");
+
+    /* 9) 线程级未知字段跳过路径不回归（v1.2 改动旁路）。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), V12_TMPL, ",\"future_field\":{\"a\":[1,2],\"b\":\"x\"}");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_OK, "线程级未知字段仍被跳过（前向兼容不回归）", "");
+}
+
 int main(int argc, char **argv)
 {
     int i;
     test_seq_semantics();
     test_zcode_kind();
+    test_v12_thread_fields();
     test_keep_last_valid();
     test_epoch_reset();
     test_size_guard();

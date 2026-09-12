@@ -16,7 +16,8 @@ void cdt_nav_init(cdt_nav_t *nav, cdt_page_t page)
 {
     if (nav == NULL) return;
     nav->page = (page == CDT_PAGE_NOW || page == CDT_PAGE_AGENTS ||
-                 page == CDT_PAGE_PLAN || page == CDT_PAGE_USAGE)
+                 page == CDT_PAGE_PLAN || page == CDT_PAGE_USAGE ||
+                 page == CDT_PAGE_DETAILS)
                     ? page
                     : CDT_PAGE_NOW;
     nav->agents_page = 0;
@@ -29,7 +30,8 @@ bool cdt_nav_clamp(cdt_nav_t *nav, const cdt_view_t *view)
 
     if (nav == NULL) return false;
     if (nav->page != CDT_PAGE_AGENTS && nav->page != CDT_PAGE_PLAN &&
-        nav->page != CDT_PAGE_USAGE && nav->page != CDT_PAGE_NOW) {
+        nav->page != CDT_PAGE_USAGE && nav->page != CDT_PAGE_DETAILS &&
+        nav->page != CDT_PAGE_NOW) {
         nav->page = CDT_PAGE_NOW; /* 防御：普通页选择里不允许出现强制页 */
         changed = true;
     }
@@ -93,6 +95,10 @@ uint32_t cdt_nav_key(cdt_nav_t *nav, const cdt_view_t *view, cdt_key_event_t ev)
             return CDT_NAV_ACT_PAGE;
 
         case CDT_PAGE_USAGE:
+            nav->page = CDT_PAGE_DETAILS; /* ZC4 v1.2：五页循环 */
+            return CDT_NAV_ACT_PAGE;
+
+        case CDT_PAGE_DETAILS:
             nav->page = CDT_PAGE_NOW;
             return CDT_NAV_ACT_PAGE;
 

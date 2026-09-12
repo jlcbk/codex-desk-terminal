@@ -32,6 +32,12 @@ void cdt_ui_usage_create(void);
 void cdt_ui_usage_apply(const cdt_view_t *view);
 lv_obj_t *cdt_ui_usage_root(void);
 
+/* ---- DETAILS（ZC4 v1.2 第 6 屏：选中会话的 PROJECT/MODEL/STATUS/DURATION/
+ * CONTEXT/INPUT/OUTPUT/CACHED 明细行；缺值 "--"，不编造）---- */
+void cdt_ui_details_create(void);
+void cdt_ui_details_apply(const cdt_view_t *view);
+lv_obj_t *cdt_ui_details_root(void);
+
 /* ---- LOW BATTERY 强制页（P2.3：电压、可用电量、低压提示、充电/唤醒说明）---- */
 void cdt_ui_lowbat_create(void);
 void cdt_ui_lowbat_apply(const cdt_view_t *view);
