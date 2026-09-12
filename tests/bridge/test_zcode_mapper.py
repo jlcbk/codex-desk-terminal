@@ -82,12 +82,17 @@ def mapper():
 def test_first_record_mints_turn_started_active_token(mapper):
     events = mapper.rollout_record(SID, model_io(turn_id="t1"))
     assert [e.type for e in events] == [
-        ev.EVENT_TURN_STARTED, ev.EVENT_THREAD_STATUS, ev.EVENT_TOKEN_USAGE]
+        ev.EVENT_TURN_STARTED, ev.EVENT_THREAD_STATUS, ev.EVENT_TOKEN_USAGE,
+        ev.EVENT_MODEL_INFO, ev.EVENT_TOKEN_TOTALS]
     assert events[0].thread_id == SID and events[0].turn_id == "t1"
     assert events[1].status == ev.THREAD_STATUS_ACTIVE
     # token：used=inputTokens+cacheReadTokens；ZCode 无容量事实 → capacity=None
     assert events[2].used_tokens == 100 + 20
     assert events[2].capacity_tokens is None
+    # v1.2 DETAILS 数据源：模型标签 + 会话累计（首条即累计值）
+    assert events[3].model == "model-under-test"
+    assert (events[4].input_tokens, events[4].output_tokens,
+            events[4].cached_tokens) == (100, 10, 20)
     # at_ms：startedAt 的 UTC 毫秒（纯函数换算）
     assert events[0].at_ms == (calendar.timegm((2026, 9, 12, 10, 0, 0)) * 1000)
 
@@ -95,18 +100,39 @@ def test_first_record_mints_turn_started_active_token(mapper):
 def test_second_record_same_turn_has_no_turn_started(mapper):
     mapper.rollout_record(SID, model_io(turn_id="t1"))
     events = mapper.rollout_record(SID, model_io(turn_id="t1"))
-    assert [e.type for e in events] == [ev.EVENT_THREAD_STATUS, ev.EVENT_TOKEN_USAGE]
+    # model 不变不再重发；token_totals 持续累计（100+100 / 10+10 / 20+20）
+    assert [e.type for e in events] == [ev.EVENT_THREAD_STATUS, ev.EVENT_TOKEN_USAGE,
+                                        ev.EVENT_TOKEN_TOTALS]
+    totals = events[-1]
+    assert (totals.input_tokens, totals.output_tokens,
+            totals.cached_tokens) == (200, 20, 40)
 
 
 def test_usage_missing_or_partial_does_not_mint_token_event(mapper):
     no_usage = model_io()
     no_usage["response"]["usage"] = None
     assert [e.type for e in mapper.rollout_record(SID, no_usage)] == [
-        ev.EVENT_TURN_STARTED, ev.EVENT_THREAD_STATUS]
+        ev.EVENT_TURN_STARTED, ev.EVENT_THREAD_STATUS, ev.EVENT_MODEL_INFO]
     bad = model_io(turn_id="t1")  # 同 turn：只差 token 事件的有无
     bad["response"]["usage"] = {"outputTokens": 5}  # inputTokens 缺失不硬凑
-    assert [e.type for e in mapper.rollout_record(SID, bad)] == [
-        ev.EVENT_THREAD_STATUS]
+    # 部分字段缺失 → 累计只记有值项（in/cached 诚实为 None，out=5）
+    events = mapper.rollout_record(SID, bad)
+    assert [e.type for e in events] == [ev.EVENT_THREAD_STATUS, ev.EVENT_TOKEN_TOTALS]
+    assert (events[-1].input_tokens, events[-1].output_tokens,
+            events[-1].cached_tokens) == (None, 5, None)
+
+
+def test_model_change_reemits_and_variant_appended(mapper):
+    """同会话换模型 → model_info 重发；variant 追加为 thought 标注。"""
+    events = mapper.rollout_record(SID, model_io(turn_id="t1"))
+    assert events[-2].model == "model-under-test"
+    changed = model_io(turn_id="t1")
+    changed["model"] = {"modelId": "GLM-5.3", "providerId": "fixture",
+                        "variant": "max"}
+    events = mapper.rollout_record(SID, changed)
+    assert ev.EVENT_MODEL_INFO in [e.type for e in events]
+    info = [e for e in events if e.type == ev.EVENT_MODEL_INFO][0]
+    assert info.model == "GLM-5.3 (max)"
 
 
 def test_non_model_io_record_ignored_and_counted(mapper):

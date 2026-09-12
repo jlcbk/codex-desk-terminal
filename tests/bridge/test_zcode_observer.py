@@ -187,7 +187,8 @@ def test_full_flow_idle_working_needs_you_done(validator, tmp_path):
         ["idle", "working", "needs_you", "working", "done"]
 
     check_all(validator, all_snaps)
-    assert len(all_snaps) == 2 + 4 + 2 + 5 + 3
+    # v1.2：rollout 行额外产 model_info（首条）+token_totals（每条）
+    assert len(all_snaps) == 2 + 6 + 2 + 6 + 3
     final = thread_of(all_snaps[-1], SID)
     assert final["state"] == "done" and final["end_reason"] == "completed"
     assert final["turn_id"] == "t1" and final["activity"] == ""
@@ -376,12 +377,12 @@ def test_offset_increment_appends_only_new_events(validator, tmp_path):
     append_line(rollout_path(root), model_io_line("t1", 1000, 200))
     snaps = obs.poll_once(1000)
     check_all(validator, snaps)
-    assert len(snaps) == 4                       # turn_started+active+token+select
+    assert len(snaps) == 6                       # turn_started+active+token+model+totals+select
     assert thread_of(snaps[-1], SID)["elapsed_ms"] == 0
 
     append_line(rollout_path(root), model_io_line("t1", 1500, 450))
     snaps = obs.poll_once(2000)                  # 同 turn 追加：不重 mint turn_started
-    assert len(snaps) == 3                       # active+token+select
+    assert len(snaps) == 4                       # active+token+totals+select
     thread = thread_of(snaps[-1], SID)
     assert thread["turn_id"] == "t1"
     assert thread["elapsed_ms"] == 1000          # turn 未重置 → 增量读无重复
@@ -389,7 +390,7 @@ def test_offset_increment_appends_only_new_events(validator, tmp_path):
 
     append_line(rollout_path(root), model_io_line("t2", 10, 0))
     snaps = obs.poll_once(3000)                  # 新 turn：turn_started 重现
-    assert len(snaps) == 4
+    assert len(snaps) == 5                       # +model 不变只补 totals
     thread = thread_of(snaps[-1], SID)
     assert thread["turn_id"] == "t2" and thread["elapsed_ms"] == 0
 
@@ -448,12 +449,12 @@ def test_rollout_dir_gone_disconnected_then_recovered(validator, tmp_path):
 def test_max_threads_prunes_oldest_without_events(tmp_path):
     root, engine, obs = make_world(tmp_path, max_threads=2)
     append_line(rollout_path(root, "s1"), model_io_line("t-a", 10, 0))
-    assert len(obs.poll_once(1000)) == 4
+    assert len(obs.poll_once(1000)) == 6
     append_line(rollout_path(root, "s2"), model_io_line("t-b", 10, 0))
-    assert len(obs.poll_once(2000)) == 4
+    assert len(obs.poll_once(2000)) == 6
     append_line(rollout_path(root, "s3"), model_io_line("t-c", 10, 0))
     snaps = obs.poll_once(3000)                  # s1 最旧→清池（仅记账，不发事件）
-    assert len(snaps) == 4                       # 只有 s3 的事件+select
+    assert len(snaps) == 6                       # 只有 s3 的事件+select
     assert obs.describe()["tracked_sessions"] == 2
     assert engine.thread_ids() == ["s1", "s2", "s3"]  # 引擎不受清池影响
     assert snaps[-1]["selected_thread_id"] == "s3"
@@ -691,9 +692,10 @@ def test_cold_start_replay_is_tail_capped(tmp_path):
     for i in range(1, 251):                       # 观察前已有 250 条历史
         append_line(rollout_path(root), model_io_line("t1", i, 0))
     snaps = obs.poll_once(1000)
-    # 首拍回放 ≤ COLD_START_MAX_RECORDS 条：1 条 mint turn(3 事件)，
-    # 其余各 2 事件，末尾 select。
-    expected = 3 + 2 * (zc.COLD_START_MAX_RECORDS - 1) + 1
+    # 首拍回放 ≤ COLD_START_MAX_RECORDS 条：1 条 mint turn(5 事件：
+    # turn+active+token_usage+model_info+token_totals)，其余各 3 事件
+    # （active+token_usage+token_totals；model 不变不重发），末尾 select。
+    expected = 5 + 3 * (zc.COLD_START_MAX_RECORDS - 1) + 1
     assert len(snaps) == expected
     assert thread_of(snaps[-1], SID)["context"]["used_tokens"] == 250
     assert thread_of(snaps[-1], SID)["state"] == "working"
@@ -731,8 +733,8 @@ def test_run_forever_relays_snapshots_and_skips_quiet_ticks(tmp_path):
     with pytest.raises(_ClockStop):
         obs.run_forever(sink, monotonic_fn)
 
-    assert len(received) == 6                     # 2（idle 拍）+ 4（working 拍）
-    assert [s["seq"] for s in received] == [1, 2, 3, 4, 5, 6]
+    assert len(received) == 8                     # 2（idle 拍）+ 6（working 拍，v1.2 +model+totals）
+    assert [s["seq"] for s in received] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert thread_states(received, SID) == ["idle", "working"]
 
 

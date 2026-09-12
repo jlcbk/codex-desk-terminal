@@ -24,6 +24,7 @@ idf_component_register(
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_agents.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_plan.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_usage.c"
+         "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_details.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_ui_lowbat.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/ui/cdt_nav.c"
     INCLUDE_DIRS "."

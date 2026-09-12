@@ -205,6 +205,32 @@ def usage_limit_window_5h(message) -> dict:
     }
 
 
+def _record_model_label(model) -> Optional[str]:
+    """rollout 的 model 字段 → 展示标签（"GLM-5.3" / "GLM-5.3 (max)"）。
+
+    modelId 缺失/非字符串 → None（诚实未知，不编造）；variant 追加在括号内
+    （thought level）；契约上限 48 字节，scrub_text 码点安全截断。
+    """
+    if not isinstance(model, dict):
+        return None
+    mid = model.get("modelId")
+    if not isinstance(mid, str) or not mid.strip():
+        return None
+    label = mid.strip()
+    variant = model.get("variant")
+    if isinstance(variant, str) and variant.strip():
+        label = "%s (%s)" % (label, variant.strip())
+    return scrub_text(label, 48)
+
+
+def _acc_usage(usage, key, current):
+    """usage 单项累加；非整数（bool 除外）跳过，不污染累计。"""
+    value = usage.get(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return current + value
+    return current
+
+
 def _usage_used_tokens(usage) -> Optional[int]:
     """response.usage → context 占用近似：inputTokens + cacheReadTokens。
 
@@ -250,7 +276,7 @@ class _SessionMapState:
     """per-session 映射记账（纯内存；仅 cap 清池时按会话整体清除）。"""
 
     __slots__ = ("turns_seen", "last_turn", "started_emitted", "pending_approvals",
-                 "cwd")
+                 "cwd", "model_seen", "tokens_in", "tokens_out", "tokens_cached")
 
     def __init__(self) -> None:
         self.turns_seen = set()              # 已发过 turn_started 的 turnId
@@ -258,6 +284,10 @@ class _SessionMapState:
         self.started_emitted = False          # SessionStart → thread_started 去重
         self.pending_approvals: List[int] = []  # 未撤销的合成 request_id（插入序）
         self.cwd: Optional[str] = None        # 最近一次 spool 行的 cwd（ZC3，备用）
+        self.model_seen: Optional[str] = None  # 最近上报的模型标签（变化才重发）
+        self.tokens_in = 0                    # 会话累计 inputTokens（v1.2）
+        self.tokens_out = 0                   # 会话累计 outputTokens（v1.2）
+        self.tokens_cached = 0                # 会话累计 cacheReadTokens（v1.2）
 
 
 class ZcodeEventMapper:
@@ -348,6 +378,22 @@ class ZcodeEventMapper:
         if used is not None:
             events.append(ev.token_usage(session_id, used, None,
                                          turn_id=turn_id, at_ms=at_ms))
+        # v1.2 DETAILS 数据源（A0 收编补齐）：会话累计 in/out/cached + 模型名。
+        # 累计跨 turn 不清零；model 变化才重发（同会话换模型极少见但存在）。
+        model = _record_model_label(record.get("model"))
+        if model is not None and model != st.model_seen:
+            st.model_seen = model
+            events.append(ev.model_info(session_id, model, at_ms=at_ms))
+        if isinstance(usage, dict):
+            st.tokens_in = _acc_usage(usage, "inputTokens", st.tokens_in)
+            st.tokens_out = _acc_usage(usage, "outputTokens", st.tokens_out)
+            st.tokens_cached = _acc_usage(usage, "cacheReadTokens",
+                                          st.tokens_cached)
+            events.append(ev.token_totals(session_id,
+                                          st.tokens_in or None,
+                                          st.tokens_out or None,
+                                          st.tokens_cached or None,
+                                          at_ms=at_ms))
         error = record.get("error")
         if isinstance(error, dict) and isinstance(error.get("message"), str) \
                 and error["message"].strip():
