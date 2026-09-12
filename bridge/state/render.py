@@ -30,6 +30,7 @@ MAX_ACTIVITY_BYTES = 192     # activity 与 attention.summary 同限
 MAX_PLAN_TEXT_BYTES = 128
 MAX_LABEL_BYTES = 48
 MAX_MODEL_BYTES = 48         # v1.2：threads[].model（INTERFACES §3 增补行）
+MAX_BRANCH_BYTES = 32        # v1.2（ZC8）：threads[].branch（git 分支名）
 MAX_EPOCH_BYTES = 64
 MAX_SEQ = 9007199254740991   # 2^53-1
 
@@ -157,10 +158,13 @@ def _thread_dict(rec: rd.ThreadRecord, now_mono: int, anchor_ms: int) -> dict:
         "attention": attention,
         "plan": _plan_of(rec),
         "context": _context_of(rec),
-        # v1.2 可选增补：恒输出（model=None/tokens 全 null=未知）；旧端忽略。
+        # v1.2 可选增补：恒输出（model=None/tokens 全 null/branch=None=未知）；旧端忽略。
         "model": (clamp_utf8(rec.model, MAX_MODEL_BYTES)
                   if isinstance(rec.model, str) else None),
         "tokens": _tokens_of(rec),
+        # v1.2（ZC8）：git 分支名；缺失/脏类型诚实 null，超长按码点截断。
+        "branch": (clamp_utf8(rec.branch, MAX_BRANCH_BYTES)
+                   if isinstance(rec.branch, str) else None),
     }
 
 

@@ -109,6 +109,9 @@ class NormalizedEvent:
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     cached_tokens: Optional[int] = None
+    # v1.2 增补（ZC8）：thread_started 的可选 branch（string|None，git 分支名，
+    # 来源端 best-effort）。None=取不到/来源不支持，reducer 保持既有值。
+    branch: Optional[str] = None
 
     def to_dict(self) -> dict:
         """转成可写入 JSONL 的 dict；省略缺省字段，元组转列表。"""
@@ -133,6 +136,8 @@ class NormalizedEvent:
             d["summary"] = self.summary
         if self.project is not None:
             d["project"] = self.project
+        if self.type == EVENT_THREAD_STARTED and self.branch is not None:
+            d["branch"] = self.branch
         if self.plan_steps:
             d["plan_steps"] = [[t, s] for (t, s) in self.plan_steps]
         if self.plan_total is not None:
@@ -174,6 +179,7 @@ class NormalizedEvent:
             item_kind=d.get("item_kind"),
             summary=d.get("summary"),
             project=d.get("project"),
+            branch=d.get("branch"),
             plan_steps=steps,
             plan_total=d.get("plan_total"),
             used_tokens=d.get("used_tokens"),
@@ -191,8 +197,14 @@ class NormalizedEvent:
 # 便捷构造器（保持调用点可读；字段与上面一致）。
 
 
-def thread_started(thread_id: str, project: str = "", at_ms: int | None = None) -> NormalizedEvent:
-    return NormalizedEvent(EVENT_THREAD_STARTED, thread_id=thread_id, project=project, at_ms=at_ms)
+def thread_started(thread_id: str, project: str = "", at_ms: int | None = None,
+                   branch: str | None = None) -> NormalizedEvent:
+    """v1.2（ZC8）：branch 可选（git 分支名，来源端 best-effort）。
+
+    默认 None 向后兼容既有调用方（codex.py 不传 → 协议 threads[].branch=null）。
+    """
+    return NormalizedEvent(EVENT_THREAD_STARTED, thread_id=thread_id, project=project,
+                           at_ms=at_ms, branch=branch)
 
 
 def thread_status(thread_id: str, status: str, active_flags=(), at_ms: int | None = None) -> NormalizedEvent:

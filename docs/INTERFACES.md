@@ -85,6 +85,7 @@
 | context | 仅有可信来源才给值；缺值为null；used_tokens/capacity_tokens为非负整数或null；used_percent为0–100或null（与usage窗口同规）；累计token消耗不能直接映射当前context占用 |
 | threads[].model | v1.2 可选增补（A0 2026-09-12）：string|null，≤48 UTF-8 字节（如 "GLM-5.3"）；会话模型名，缺失/null 显示 "--" |
 | threads[].tokens | v1.2 可选增补（A0 2026-09-12）：object（不接受 null 整体），存在时三键必填 {"input_tokens","output_tokens","cached_tokens"}，各为非负整数或 null；语义=会话累计（跨 turn 不清零，turn_started 不重置）；设备端 >2^32 饱和到 uint32 上限；缺失显示 "--" |
+| threads[].branch | v1.2 可选增补（A0 2026-09-12，ZC8）：string\|null，≤32 UTF-8 字节（git 分支名）；语义=来源端 best-effort（观察器对会话 cwd 只读执行 `git branch --show-current`，失败/超时/空输出→null），缺失/null 显示 "--" |
 | usage | windows最多4项；windows_total≥数组长度（同threads规则）；窗口长度用正整数分钟；百分比0–100或null（含context.used_percent）；缺额度available=false、windows=[] |
 | end_reason | null / completed / failed / cancelled；cancelled显示idle及取消说明 |
 | selected_thread_id | null或必须指向已包含线程；优先保留选中线程并占一个数组名额 |
@@ -193,7 +194,7 @@ Transport回调不调用LVGL。解析任务将最新已验证快照交给UI任�
 - BLE/Wi-Fi使用相同JSON字节fixtures；hash一致，渲染也一致。设备配置切换transport须stop旧适配器再start新适配器。
 - Mock编译/启动显式标记，屏幕或日志可识别source=mock；生产固件禁用battery_sample输入。真机低压测试经电源/ADC进行。
 - v1只发全量，不实现delta。新增可选字段允许旧端忽略；删除/改义/改类型需要主版本升级和协调部署。
-- v1.2 可选增补（threads[].model / threads[].tokens，2026-09-12）：schema_version 保持 1，向后兼容——旧端按"未知附加字段一律允许"忽略（原样），旧桥+新固件=字段缺失渲染 "--"，新桥+旧固件=旧固件忽略新字段；新端对缺失字段显示 "--"，不编造。
+- v1.2 可选增补（threads[].model / threads[].tokens / threads[].branch，2026-09-12，branch 为 ZC8 增补）：schema_version 保持 1，向后兼容——旧端按"未知附加字段一律允许"忽略（原样），旧桥+新固件=字段缺失渲染 "--"，新桥+旧固件=旧固件忽略新字段；新端对缺失字段显示 "--"，不编造。
 - P0交付schema、C类型、示例及共同测试向量；P1 parser与Bridge encoder均须通过。P3验证两个transport输出同一state，P5验证远端无法解除本地critical。
 
 ## 9. P0 冻结清单

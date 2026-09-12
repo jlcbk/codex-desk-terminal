@@ -632,7 +632,7 @@ static cdtj_err_t parse_thread(cdt_json_t *j, cdt_thread_t *out)
 {
     /* bit: id=1 turn=2 project=4 state=8 activity=16 updated=32 elapsed=64
      *      waiting=128 end_reason=256 attention=512 plan=1024 context=2048
-     * v1.2 可选位（不计入必填掩码）：model=0x1000 tokens=0x2000 */
+     * v1.2 可选位（不计入必填掩码）：model=0x1000 tokens=0x2000 branch=0x4000 */
     uint32_t seen = 0;
     key_t k;
     cdtj_err_t e = cdtj_expect(j, '{');
@@ -809,6 +809,20 @@ static cdtj_err_t parse_thread(cdt_json_t *j, cdt_thread_t *out)
                 }
             } else {
                 e = parse_tokens(j, out);
+            }
+        } else if (key_is(&k, "branch")) {
+            /* v1.2 可选增补（ZC8）：string|null；缺失/null → branch_present=false。 */
+            if (seen & 0x4000u) {
+                return CDT_PARSE_ERR_FIELD;
+            }
+            seen |= 0x4000u;
+            if (cdtj_peek(j) == 'n') {
+                e = cdtj_expect_null(j);
+            } else {
+                e = rd_str(j, out->branch, CDT_MAX_BRANCH_BYTES + 1);
+                if (e == CDT_PARSE_OK) {
+                    out->branch_present = true;
+                }
             }
         } else {
             e = cdtj_skip_value(j); /* 未知字段跳过路径不回归（§3 前向兼容） */

@@ -3,7 +3,9 @@
  *
  * 覆盖（P2.2/P2.3 验收 + INTERFACES §4/§6）：
  *   - AGENTS：排序（needs_you→error→working/thinking→done→idle；同级
- *     updated_at 降序、id 升序）、4 行/页分页计数、总数/裁剪标记、空数据
+ *     updated_at 降序、id 升序）、ZC8 两行式 3 行/页分页计数、总数/裁剪标记、
+ *     空数据、第二行活动文本（透传/空省略/截断码点安全）、DETAILS BRANCH 行
+ *     （缺失 --/透传/贴边与 CJK）
  *   - PLAN：只数 completed、total 来自数据、分页计数、按选中任务生成、空计划
  *   - USAGE：窗口名取自数据（不编造）、pct 取整、实际窗口长度、reset 倒计时
  *     （fresh 推进/陈旧冻结/过期不猜 0%/缺失 RST --）、context 独立
@@ -188,9 +190,93 @@ static void test_agents_paging_and_hidden(void)
     s.threads_truncated = true;
 
     cdt_present(&s, &r, 30000, &v);
-    check(v.agents_pages == 2, "8 行 → 2 页（4 行/页）", "");
+    check(v.agents_pages == 3, "8 行 → 3 页（ZC8 两行式 3 行/页）", "");
     check(v.agents_hidden == 2 && v.threads_truncated,
           "裁剪标记 hidden=2（还有 N 个）", "");
+}
+
+/* ================== ZC8：AGENTS 两行式第二行（activity） ================== */
+
+static void test_agents_two_line_activity(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t with_act = mk_thread("t-a", CDT_THREAD_STATE_WORKING, 200, 0);
+    cdt_thread_t no_act = mk_thread("t-b", CDT_THREAD_STATE_DONE, 100, 0);
+
+    snprintf(with_act.activity, sizeof(with_act.activity),
+             "正在运行构建与测试，请留意输出");
+    no_act.activity[0] = '\0'; /* 活动为空：第二行省略 */
+    add_thread(&s, with_act);  /* working 排序在前 */
+    add_thread(&s, no_act);
+
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.agents_rows[0].activity,
+                 "正在运行构建与测试，请留意输出") == 0,
+          "AGENTS 第二行：activity 原文透传（未超预算）",
+          v.agents_rows[0].activity);
+    check(v.agents_rows[1].activity[0] == '\0',
+          "AGENTS 第二行：activity 空 → 空串（UI 省略该行不占位）", "");
+
+    /* 超预算截断：CJK 2 列/ASCII 1 列，44 列预算，截断补 ".." 且码点安全 */
+    {
+        cdt_app_state_t s2 = base_state();
+        char long_act[CDT_MAX_ACTIVITY_BYTES + 1];
+        int i;
+
+        for (i = 0; i < 60; i++) {
+            snprintf(long_act + i * 3, sizeof(long_act) - i * 3, "活");
+        }
+        memset(&v, 0, sizeof(v));
+        add_thread(&s2, mk_thread("t-long", CDT_THREAD_STATE_WORKING, 1, 0));
+        snprintf(s2.threads[0].activity, sizeof(s2.threads[0].activity), "%s",
+                 long_act);
+        cdt_present(&s2, &r, 30000, &v);
+        check(strlen(v.agents_rows[0].activity) < strlen(long_act) &&
+                  strlen(v.agents_rows[0].activity) >= 2 &&
+                  strcmp(v.agents_rows[0].activity +
+                         strlen(v.agents_rows[0].activity) - 2, "..") == 0,
+              "AGENTS 第二行：超 44 列 → 截断补 ..（码点安全）",
+              v.agents_rows[0].activity);
+    }
+}
+
+/* ================== ZC8：DETAILS BRANCH 行（v1.2 branch） ================== */
+
+static void test_details_branch_row(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+
+    add_thread(&s, t);
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.branch_text, "--") == 0,
+          "DETAILS BRANCH：缺失/null → --（不编造）", v.branch_text);
+
+    snprintf(s.threads[0].branch, sizeof(s.threads[0].branch), "feat/agent-ui");
+    s.threads[0].branch_present = true;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.branch_text, "feat/agent-ui") == 0,
+          "DETAILS BRANCH：有值透传", v.branch_text);
+
+    /* 32 字节契约上限的两种最坏形态都在 32 列预算内：
+     * 32 ASCII（32 列，恰好贴边不截断）与 10 CJK（20 列）→ 原样透传。
+     * 列预算截断分支对 branch 属防御（解析层已拒 >32 字节）。 */
+    snprintf(s.threads[0].branch, sizeof(s.threads[0].branch),
+             "abcdefghijklmnopqrstuvwxyz012345"); /* 32 字节 */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.branch_text,
+                 "abcdefghijklmnopqrstuvwxyz012345") == 0,
+          "DETAILS BRANCH：32 字节 ASCII 贴边完整透传", v.branch_text);
+
+    snprintf(s.threads[0].branch, sizeof(s.threads[0].branch),
+             "分分分分分分分分分分"); /* 10 CJK=30B */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.branch_text, "分分分分分分分分分分") == 0,
+          "DETAILS BRANCH：CJK 分支名码点安全透传", v.branch_text);
 }
 
 static void test_agents_empty(void)
@@ -791,6 +877,8 @@ int main(void)
 {
     test_agents_sort();
     test_agents_paging_and_hidden();
+    test_agents_two_line_activity();
+    test_details_branch_row();
     test_agents_empty();
     test_plan_counts_and_paging();
     test_plan_follows_selected();

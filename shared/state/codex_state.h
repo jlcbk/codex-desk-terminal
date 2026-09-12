@@ -54,6 +54,7 @@ extern "C" {
 #define CDT_MAX_PLAN_TEXT_BYTES 128
 #define CDT_MAX_USAGE_LABEL_BYTES 48
 #define CDT_MAX_MODEL_BYTES 48        /* v1.2 增补：threads[].model（A0 2026-09-12） */
+#define CDT_MAX_BRANCH_BYTES 32       /* v1.2 增补（ZC8）：threads[].branch（git 分支名） */
 
 /* 数组上限与消息预算。来源 §3 threads/plan/usage/完整消息 行。 */
 #define CDT_MAX_THREADS 8
@@ -231,6 +232,10 @@ typedef struct {
     uint32_t output_tokens;
     bool cached_tokens_present;
     uint32_t cached_tokens;
+    /* v1.2 可选增补（ZC8，A0 2026-09-12）：git 分支名（string|null，≤32 字节）。
+     * 来源端 best-effort，缺失/null → branch_present=false，DETAILS 显示 "--"。 */
+    bool branch_present;               /* false == 字段缺失或 JSON null */
+    char branch[CDT_MAX_BRANCH_BYTES + 1];
 } cdt_thread_t;
 
 /* §2 AppState 顶层对象（AppState 全量快照，§1） */

@@ -184,11 +184,13 @@ static void fmt_tokens_k(char *dst, size_t dstsz, uint32_t v)
     }
 }
 
-/* ZC4 DETAILS 行：CONTEXT 详情与三路累计 token（缺值 "--"，不编造）。*/
+/* ZC4 DETAILS 行：CONTEXT 详情与三路累计 token（缺值 "--"，不编造）。
+ * ZC8 追加 BRANCH 行：v1.2 threads[].branch（git 分支名），null/缺失 → "--"。*/
 static void fill_details(const cdt_thread_t *th, cdt_view_t *view)
 {
     if (th == NULL) {
         set_str(view->model_text, sizeof(view->model_text), "--");
+        set_str(view->branch_text, sizeof(view->branch_text), "--");
         set_str(view->context_detail_text, sizeof(view->context_detail_text), "--");
         set_str(view->tokens_in_text, sizeof(view->tokens_in_text), "--");
         set_str(view->tokens_out_text, sizeof(view->tokens_out_text), "--");
@@ -202,6 +204,14 @@ static void fill_details(const cdt_thread_t *th, cdt_view_t *view)
     }
     else {
         set_str(view->model_text, sizeof(view->model_text), "--");
+    }
+
+    if (th->branch_present && th->branch[0] != '\0') {
+        trunc_cols(view->branch_text, sizeof(view->branch_text), th->branch,
+                   CDT_VIEW_BRANCH_MAX_COLS);
+    }
+    else {
+        set_str(view->branch_text, sizeof(view->branch_text), "--");
     }
 
     if (th->context.used_percent_present && th->context.used_tokens_present &&
@@ -479,6 +489,15 @@ void cdt_present(const cdt_app_state_t *state,
             row->waiting = (src->state == CDT_THREAD_STATE_NEEDS_YOU);
             row->emphasized = (src->state == CDT_THREAD_STATE_NEEDS_YOU ||
                                src->state == CDT_THREAD_STATE_ERROR);
+            /* ZC8：第二行活动文本（效果图 3 两行式）——按行宽列预算截断；
+             * activity 为空 → 空串（UI 省略该行，不占位）。 */
+            if (src->activity[0] != '\0') {
+                trunc_cols(row->activity, sizeof(row->activity), src->activity,
+                           CDT_VIEW_AGENTS_ACTIVITY_MAX_COLS);
+            }
+            else {
+                row->activity[0] = '\0';
+            }
             /* ZC5：AGENTS 行尾右对齐时长（效果图 3）——与 NOW 时长同规则：
              * fresh 推进、终态（end_reason 非空）定格在快照基值。此刻 delta_ms
              * 尚未被下方选中线程的终态规则改写，仍是原始 fresh 增量。 */
@@ -487,8 +506,9 @@ void cdt_present(const cdt_app_state_t *state,
                              (src->end_reason == CDT_END_REASON_NULL
                                   ? (uint64_t)delta_ms : 0u));
         }
-        view->agents_pages = (uint8_t)((n + CDT_VIEW_ROWS_PER_PAGE - 1) /
-                                       CDT_VIEW_ROWS_PER_PAGE);
+        /* ZC8：两行式每页 3 行（PLAN 页仍 4 行/页，见 CDT_VIEW_ROWS_PER_PAGE）。 */
+        view->agents_pages = (uint8_t)((n + CDT_VIEW_AGENTS_ROWS_PER_PAGE - 1) /
+                                       CDT_VIEW_AGENTS_ROWS_PER_PAGE);
         if (view->agents_pages == 0) view->agents_pages = 1;
     }
 

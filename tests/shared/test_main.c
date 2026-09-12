@@ -400,12 +400,81 @@ static void test_v12_thread_fields(void)
     check(r == CDT_PARSE_OK, "线程级未知字段仍被跳过（前向兼容不回归）", "");
 }
 
+static void test_v12_branch_field(void)
+{
+    /* v1.2 增补（ZC8）：threads[].branch 可选字段（git 分支名，≤32 字节）。
+     * 接受/缺失（旧桥兼容）/null/超长拒绝/重复拒绝。 */
+    static const char *BR_TMPL =
+        "{\"schema_version\":1,\"kind\":\"state\",\"bridge_epoch\":\"t-1\",\"seq\":1,"
+        "\"generated_at_ms\":null,"
+        "\"source\":{\"kind\":\"mock\",\"connected\":true,\"stale\":false,\"last_event_at_ms\":null},"
+        "\"selected_thread_id\":\"a\",\"threads_total\":1,\"threads_truncated\":false,"
+        "\"threads\":[{\"id\":\"a\",\"turn_id\":null,\"project\":\"p\",\"state\":\"working\","
+        "\"activity\":\"x\",\"updated_at_ms\":null,\"elapsed_ms\":0,\"waiting_ms\":0,"
+        "\"end_reason\":null,\"attention\":null,"
+        "\"plan\":{\"total\":0,\"truncated\":false,\"steps\":[]},"
+        "\"context\":{\"used_tokens\":null,\"capacity_tokens\":null,\"used_percent\":null}"
+        "%s}],"
+        "\"usage\":{\"available\":false,\"updated_at_ms\":null,\"windows_total\":0,"
+        "\"windows_truncated\":false,\"windows\":[]}}";
+    cdt_state_store_t st;
+    char extra[160];
+    char buf[1280];
+    char detail[160];
+    cdt_parse_result_t r;
+    const cdt_app_state_t *snap;
+
+    /* 1) branch 全量：接受并存储（与 model/tokens 并存）。 */
+    cdt_state_store_init(&st);
+    snprintf(extra, sizeof(extra),
+             ",\"model\":\"m\",\"tokens\":{\"input_tokens\":1,\"output_tokens\":null,"
+             "\"cached_tokens\":null},\"branch\":\"feat/agent-ui\"");
+    snprintf(buf, sizeof(buf), BR_TMPL, extra);
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snap = cdt_state_store_snapshot(&st);
+    snprintf(detail, sizeof(detail), "实际码=%d", (int)r);
+    check(r == CDT_PARSE_OK, "v1.2 branch 与 model/tokens 并存接受", detail);
+    check(snap != NULL && snap->threads[0].branch_present &&
+              strcmp(snap->threads[0].branch, "feat/agent-ui") == 0,
+          "branch 存储正确", "");
+
+    /* 2) branch 缺失（旧桥快照）→ 接受且 absent。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), BR_TMPL, "");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snap = cdt_state_store_snapshot(&st);
+    check(r == CDT_PARSE_OK && snap != NULL && !snap->threads[0].branch_present,
+          "branch 缺失（旧桥）→ OK 且 absent", "");
+
+    /* 3) branch null → 接受且 absent（协议 string|null）。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), BR_TMPL, ",\"branch\":null");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snap = cdt_state_store_snapshot(&st);
+    check(r == CDT_PARSE_OK && snap != NULL && !snap->threads[0].branch_present,
+          "branch null → OK 且 absent", "");
+
+    /* 4) branch 33 字节 → ERR_SIZE（>32 字节上限，分配前拒绝）。 */
+    cdt_state_store_init(&st);
+    snprintf(extra, sizeof(extra), ",\"branch\":\"%033d\"", 1);
+    snprintf(buf, sizeof(buf), BR_TMPL, extra);
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_SIZE, "branch 33 字节 → ERR_SIZE", "");
+
+    /* 5) branch 重复出现 → ERR_FIELD。 */
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), BR_TMPL, ",\"branch\":\"a\",\"branch\":\"b\"");
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    check(r == CDT_PARSE_ERR_FIELD, "branch 重复 → ERR_FIELD", "");
+}
+
 int main(int argc, char **argv)
 {
     int i;
     test_seq_semantics();
     test_zcode_kind();
     test_v12_thread_fields();
+    test_v12_branch_field();
     test_keep_last_valid();
     test_epoch_reset();
     test_size_guard();

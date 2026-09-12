@@ -32,6 +32,10 @@
 - 会话→线程：thread_id 直接用 sessionId；子代理 project=basename(metadata.cwd)；
   主会话 project 来自 spool SessionStart 行的 cwd（ZC3 放行：basename+脱敏，
   旧行无 cwd → 留空）。主会话与子代理线程同池。
+- branch（v1.2 增补，ZC8）：thread_started 时对会话 cwd 本机只读执行
+  ``git -C <cwd> branch --show-current``（subprocess 超时 3s；失败/超时/空
+  输出→None；结果按会话缓存，绝不重复执行、绝不做任何写操作）。取不到 →
+  事件不带 branch（协议 threads[].branch=null，DETAILS 显示 "--"）。
 - working：rollout 出现新行 → thread_status(active)；同一 turnId 首次出现先
   turn_started（reducer 的 turn_started 会清 plan/pending/终态门）。
 - plan：spool PreToolUse(TodoWrite) 行的 plan（ZC3 放行裁决=仅 TodoWrite 的
@@ -90,6 +94,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Tuple
@@ -142,6 +147,34 @@ PROMPT_TURN_PREFIX = "prompt-"
 # 冷启动/重读尾巴上限：首次跟踪一个 rollout 文件最多回放这么多条记录。
 # 状态从尾部收敛（当前 turn 必在尾部），同时防止长历史文件把首拍事件量撑爆。
 COLD_START_MAX_RECORDS = 200
+
+# ---- git 分支观察（v1.2 threads[].branch，ZC8；契约 ≤32 UTF-8 字节）----------
+# 对会话 cwd 只读执行 `git branch --show-current` 的超时上限（秒）。
+GIT_BRANCH_TIMEOUT_S = 3.0
+
+
+def resolve_git_branch(cwd, timeout_s: float = GIT_BRANCH_TIMEOUT_S) -> Optional[str]:
+    """会话 cwd → 当前 git 分支名（只读、best-effort；branch 字段唯一来源）。
+
+    在本机对 cwd 只读执行 ``git -C <cwd> branch --show-current``：subprocess
+    超时 3 秒；cwd 缺失/非目录、git 缺失、非仓库、超时、非零退出、空输出
+    （detached HEAD 等）一律返回 None，绝不抛出、绝不编造。只读：命令本身
+    无任何写语义，也绝不在 cwd 或仓库内做任何写操作。
+    """
+    if not isinstance(cwd, str) or not cwd.strip() or not os.path.isdir(cwd):
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", cwd, "branch", "--show-current"],
+            capture_output=True, timeout=timeout_s, check=False)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.decode("utf-8", errors="replace").strip()
+    if not out:
+        return None
+    return state_render.clamp_utf8(out, state_render.MAX_BRANCH_BYTES)
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +309,8 @@ class _SessionMapState:
     """per-session 映射记账（纯内存；仅 cap 清池时按会话整体清除）。"""
 
     __slots__ = ("turns_seen", "last_turn", "started_emitted", "pending_approvals",
-                 "cwd", "model_seen", "tokens_in", "tokens_out", "tokens_cached")
+                 "cwd", "model_seen", "tokens_in", "tokens_out", "tokens_cached",
+                 "branch_done", "branch")
 
     def __init__(self) -> None:
         self.turns_seen = set()              # 已发过 turn_started 的 turnId
@@ -288,6 +322,8 @@ class _SessionMapState:
         self.tokens_in = 0                    # 会话累计 inputTokens（v1.2）
         self.tokens_out = 0                   # 会话累计 outputTokens（v1.2）
         self.tokens_cached = 0                # 会话累计 cacheReadTokens（v1.2）
+        self.branch_done = False              # git 分支已解析过（每会话至多一次）
+        self.branch: Optional[str] = None     # 解析结果（None=取不到，诚实 null）
 
 
 class ZcodeEventMapper:
@@ -300,11 +336,14 @@ class ZcodeEventMapper:
     - 未知记录类型 / 未知 hook 事件名：忽略（前向兼容），只计数。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, branch_resolver: Optional[Callable[[str], Optional[str]]] = None) -> None:
         self._sessions = {}
         self._agents_started = set()   # 已发过 thread_started 的子代理线程
         self._synthetic_next = -1      # 合成审批 id 计数器（负数递减）
         self._prompt_seq = 0           # UserPromptSubmit 合成 turn 计数器（递增）
+        # v1.2（ZC8）：cwd → git 分支名解析函数（IO 注入点，保持本类纯内存可
+        # 单测；观察器注入 resolve_git_branch，单测注入 fake。None=不解析）。
+        self.branch_resolver = branch_resolver
         # 计数器（报告用；只有计数，无内容）。
         self.records_seen = 0
         self.non_model_io = 0
@@ -320,6 +359,27 @@ class ZcodeEventMapper:
             st = _SessionMapState()
             self._sessions[session_id] = st
         return st
+
+    def _branch_for(self, st: _SessionMapState, cwd) -> Optional[str]:
+        """会话 cwd → git 分支（每会话至多解析一次，结果缓存不重复执行）。
+
+        - cwd 缺失/坏类型：不调用 resolver（也不消耗这一次机会——等真见到
+          cwd 的 thread_started 再解析，与"cwd 首见时执行"口径一致）；
+        - resolver 缺失（单测纯内存构造）：恒 None；
+        - resolver 抛异常：视同失败 → None（resolver 自身已承诺不抛，防御）。
+        """
+        if st.branch_done:
+            return st.branch
+        if not isinstance(cwd, str) or not cwd.strip():
+            return None
+        st.branch_done = True
+        if self.branch_resolver is None:
+            return None
+        try:
+            st.branch = self.branch_resolver(cwd)
+        except Exception:  # noqa: BLE001 — best-effort 字段绝不拖垮事件流
+            st.branch = None
+        return st.branch
 
     def forget_session(self, session_id: str) -> None:
         """会话映射记账清除（仅观察器 max_threads 清池时调用）。
@@ -449,7 +509,12 @@ class ZcodeEventMapper:
             project = ""
             if isinstance(cwd, str) and cwd.strip():
                 project = scrub_text(os.path.basename(cwd.rstrip("/")) or cwd, 96)
-            return [ev.thread_started(session_id, project, at_ms=at_ms)]
+            # v1.2（ZC8）：git 分支——cwd 首见（SessionStart 行优先，回退此前
+            # spool 行记住的 st.cwd）时对 cwd 只读解析一次并按会话缓存。
+            branch = self._branch_for(st, cwd if isinstance(cwd, str) and cwd.strip()
+                                      else st.cwd)
+            return [ev.thread_started(session_id, project, at_ms=at_ms,
+                                      branch=branch)]
         if event_name == SPOOL_USER_PROMPT_SUBMIT:
             # 合成 turn 起点用独立命名空间（"prompt-N"），与真实 turnId/占位
             # "stop" 必然不同 → reducer 视为新 turn，正确清除上一轮 DONE。
@@ -570,8 +635,10 @@ class ZcodeEventMapper:
             project = ""
             if isinstance(cwd, str) and cwd.strip():
                 project = scrub_text(os.path.basename(cwd.rstrip("/")) or cwd, 96)
+            # v1.2（ZC8）：子代理线程首见同样按 cwd 只读解析 git 分支（缓存一次）。
+            branch = self._branch_for(st, cwd)
             events.append(ev.thread_started(child_session_id, project,
-                                            at_ms=at_ms))
+                                            at_ms=at_ms, branch=branch))
         status = meta.get("status")
         terminal = _meta_is_terminal(meta)
         if not terminal:
@@ -608,10 +675,13 @@ class ZcodeObserver:
     def __init__(self, engine, *, rollout_dir=None, agents_dir=None,
                  spool_path=None, poll_interval_s: float = 1.0,
                  stale_after_s: float = 120.0, lookback_s: float = 86400.0,
-                 max_threads: int = 16) -> None:
+                 max_threads: int = 16,
+                 branch_resolver: Optional[Callable[[str], Optional[str]]]
+                 = resolve_git_branch) -> None:
         self.engine = engine
         # rollout_dir/agents_dir 缺省 = ZCode 标准路径；spool_path=None = 禁用
         # hook 通道（标准路径见 DEFAULT_SPOOL_PATH，由调用方显式传入启用）。
+        # branch_resolver=None 表示禁用 git 分支解析（thread_started 无 branch）。
         self.rollout_dir = os.path.expanduser(
             rollout_dir if rollout_dir is not None else DEFAULT_ROLLOUT_DIR)
         self.agents_dir = os.path.expanduser(
@@ -621,7 +691,7 @@ class ZcodeObserver:
         self.stale_after_s = max(0.0, float(stale_after_s))
         self.lookback_s = max(0.0, float(lookback_s))   # ≤0 = 关闭新鲜度过滤
         self.max_threads = max(1, int(max_threads))
-        self.mapper = ZcodeEventMapper()
+        self.mapper = ZcodeEventMapper(branch_resolver=branch_resolver)
         # ---- 记账（会话粒度）----
         self._sessions = {}         # session_id -> 最近活动 monotonic ms（0=休眠）
         self._ever_seen = set()     # 曾注册过的会话（清池后再发现按休眠态入池）

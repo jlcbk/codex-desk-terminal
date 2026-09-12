@@ -54,6 +54,8 @@ class ThreadRecord:
         # v1.2 增补：会话级模型名与累计 token（跨 turn 不清零，turn_started
         # 不重置——会话累计语义，INTERFACES §3 threads[].model/tokens 行）。
         "model", "tokens_input", "tokens_output", "tokens_cached",
+        # v1.2 增补（ZC8）：会话级 git 分支名（同为会话级，turn_started 不清）。
+        "branch",
     )
 
     def __init__(self, thread_id: str) -> None:
@@ -77,6 +79,7 @@ class ThreadRecord:
         self.tokens_input: Optional[int] = None     # v1.2：会话累计（诚实 null）
         self.tokens_output: Optional[int] = None
         self.tokens_cached: Optional[int] = None
+        self.branch: Optional[str] = None           # v1.2（ZC8）：git 分支名
 
 
 def new_internal_state() -> dict:
@@ -136,6 +139,10 @@ def reduce(state: dict, event, now_mono: int) -> dict:
         if rec is not None:
             if event.project:
                 rec.project = event.project
+            if event.branch:
+                # v1.2（ZC8）：git 分支名（会话级；重复 thread_started 无
+                # branch 时不覆盖既有值，同 project 的"有值才写"口径）。
+                rec.branch = event.branch
             # 已有线程不因重复 thread/started 改状态（不复活）。
             if rec.updated_mono == 0:
                 rec.updated_mono = now_mono

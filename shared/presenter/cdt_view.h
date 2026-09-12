@@ -50,11 +50,17 @@ extern "C" {
 #define CDT_VIEW_ELAPSED_BYTES 16  /* hh:mm:ss（小时可 >99） */
 #define CDT_VIEW_VOLTAGE_BYTES 8   /* "65.53V"=6B */
 
-/* ---- P2.2：AGENTS 页（§6：排序、最多 4 行/页、总数/裁剪标记）---- */
-#define CDT_VIEW_ROWS_PER_PAGE 4            /* AGENTS/PLAN 子页行数（P2 固定） */
+/* ---- P2.2：AGENTS 页（§6：排序、总数/裁剪标记）----
+ * ZC8：AGENTS 改两行式（第一行 状态徽标+项目名+行尾 elapsed；第二行 活动文本），
+ * 每页 3 行（AGENTS_ROWS_PER_PAGE，两行式占高）；PLAN 页仍 4 行/页
+ * （ROWS_PER_PAGE），两常量独立；翻页/强调/排序逻辑不变。 */
+#define CDT_VIEW_ROWS_PER_PAGE 4            /* PLAN 子页行数（P2 固定） */
+#define CDT_VIEW_AGENTS_ROWS_PER_PAGE 3     /* ZC8：AGENTS 两行式每页行数 */
 #define CDT_VIEW_AGENTS_LABEL_BYTES 12      /* "THINKING"=8B */
 #define CDT_VIEW_AGENTS_PROJECT_MAX_COLS 30
 #define CDT_VIEW_AGENTS_PROJECT_BYTES 48    /* (30/2)*3B +".."+NUL */
+#define CDT_VIEW_AGENTS_ACTIVITY_MAX_COLS 44 /* ZC8：第二行活动文本（缩进后行宽） */
+#define CDT_VIEW_AGENTS_ACTIVITY_BYTES 72   /* (44/2)*3B +".."+NUL */
 #define CDT_VIEW_STEP_MAX_COLS 34
 #define CDT_VIEW_STEP_BYTES 56              /* (34/2)*3B +".."+NUL */
 #define CDT_VIEW_WIN_LABEL_MAX_COLS 18
@@ -71,12 +77,16 @@ extern "C" {
 #define CDT_VIEW_MODEL_BYTES 40             /* (24/2)*3B +".."+NUL */
 #define CDT_VIEW_CTX_DETAIL_BYTES 40        /* "4194304K / 4194304K (100%)"=27B */
 #define CDT_VIEW_TOKEN_TEXT_BYTES 12        /* "4194304K"=8B（uint32 饱和值） */
+/* ZC8：BRANCH 行（v1.2 branch ≤32 字节；null/缺失 → "--"） */
+#define CDT_VIEW_BRANCH_MAX_COLS 32
+#define CDT_VIEW_BRANCH_BYTES 52            /* (32/2)*3B +".."+NUL */
 
 typedef struct {
     cdt_thread_state_t state;
     char state_label[CDT_VIEW_AGENTS_LABEL_BYTES]; /* ASCII 大写状态词 */
     char project[CDT_VIEW_AGENTS_PROJECT_BYTES];   /* 已截断；空 → "--" */
     char elapsed_text[CDT_VIEW_ELAPSED_BYTES]; /* ZC5：行尾右对齐时长（终态定格） */
+    char activity[CDT_VIEW_AGENTS_ACTIVITY_BYTES]; /* ZC8：第二行活动文本；空串 → 该行省略 */
     bool waiting;    /* needs_you：行首 "!" 等待提醒标记 */
     bool emphasized; /* needs_you / error 行强调 */
 } cdt_agents_row_t;
@@ -165,7 +175,7 @@ typedef struct {
     /* ---- P2.2：AGENTS 页数据（已按 §6 排序；UI 经导航子页切片）---- */
     cdt_agents_row_t agents_rows[CDT_MAX_THREADS]; /* ≤8 行可见线程 */
     uint8_t agents_count;  /* 可见行数（=thread_count） */
-    uint8_t agents_pages;  /* ceil(count/4)；无数据 → 1（单页 NO TASKS） */
+    uint8_t agents_pages;  /* ZC8：ceil(count/AGENTS_ROWS_PER_PAGE)；无数据 → 1 */
     uint16_t agents_hidden; /* threads_total - thread_count（>0 → "还有 N 个"） */
     bool threads_truncated; /* 透传（与 agents_hidden 同源，UI 取其一） */
 
@@ -189,6 +199,7 @@ typedef struct {
 
     /* ---- ZC4：DETAILS 页数据（v1.2 会话级字段；全部缺值 → "--"，不编造）---- */
     char model_text[CDT_VIEW_MODEL_BYTES]; /* 选中线程 model（列预算截断） */
+    char branch_text[CDT_VIEW_BRANCH_BYTES]; /* ZC8：选中线程 branch；null/缺失 → "--" */
     /* CONTEXT：capacity+used+percent 全知 → "176K / 258K (68%)"；仅 used →
      * "578K TOKENS"；全无 → "--"（累计 token 不冒充 context 百分比） */
     char context_detail_text[CDT_VIEW_CTX_DETAIL_BYTES];

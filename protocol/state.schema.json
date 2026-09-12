@@ -268,6 +268,12 @@
                 "description": "缓存命中 token 累计（会话维度）或 null。"
               }
             }
+          },
+          "branch": {
+            "type": ["string", "null"],
+            "maxLength": 32,
+            "cdt-utf8-max-bytes": 32,
+            "description": "v1.2 可选增补（A0 2026-09-12，ZC8）：git 分支名（会话来源端 best-effort），≤32 UTF-8 字节或 null；取不到 → null，设备 DETAILS 显示 \"--\"。不在 required 中，旧端按未知附加字段忽略（§8 兼容矩阵）。"
           }
         }
       }
