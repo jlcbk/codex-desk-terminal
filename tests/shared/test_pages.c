@@ -13,6 +13,9 @@
  *   - ZC5：NOW 信息条两段（CTX 三态 / 首窗口短词两态）、WAITING 仅 needs_you
  *     语义（waiting_present）、AGENTS 行 elapsed（fresh 推进/终态定格）、
  *     USAGE CONTEXT 行（K/K(p%) / K TOKENS / --）、NOW PLAN 面板数据（前 4 步）
+ *   - ZC7：USAGE 图形化窗口块（"<N> HOUR WINDOW"/"<M> MIN WINDOW" 标签行、
+ *     "RESET IN h:mm / hh:mm:ss / EXPIRED / --" 倒计时行）、PLAN 当前步详情
+ *     （in_progress 优先 / 首 pending 回退 / 全完成隐藏 / 66 列码点安全截断）
  *   - P2.3 强制页：电池 critical/sleep_prep 优先于 NEEDS YOU；任意 selected_page
  *     下强制页不脱离；恢复（ACTIVE/健康链路）保留普通页面、计时解冻
  *   - 导航（cdt_nav，纯逻辑）：短按子页先推进再切主页面（P2 固定行为）、
@@ -103,6 +106,42 @@ static void add_thread(cdt_app_state_t *s, cdt_thread_t t)
         s->threads[s->thread_count++] = t;
     }
     s->threads_total = s->thread_count;
+}
+
+/* UTF-8 合法性检查（截断不得产生断裂序列；与 test_presenter.c 同规则） */
+static int valid_utf8(const char *str)
+{
+    const unsigned char *p = (const unsigned char *)str;
+    while (*p) {
+        unsigned char b = *p;
+        size_t n, i;
+        if (b < 0x80u) { p++; continue; }
+        if ((b & 0xE0u) == 0xC0u) n = 2;
+        else if ((b & 0xF0u) == 0xE0u) n = 3;
+        else if ((b & 0xF8u) == 0xF0u) n = 4;
+        else return 0;
+        for (i = 1; i < n; i++) {
+            if ((p[i] & 0xC0u) != 0x80u) return 0;
+        }
+        p += n;
+    }
+    return 1;
+}
+
+/* 显示列估算（CJK 2 列/其余 1 列；测试输入只有 ASCII 与 3 字节 CJK） */
+static int display_cols(const char *str)
+{
+    const unsigned char *p = (const unsigned char *)str;
+    int cols = 0;
+    while (*p) {
+        int n = 1;
+        if (*p >= 0xF0u) n = 4;
+        else if (*p >= 0xE0u) n = 3;
+        else if (*p >= 0xC0u) n = 2;
+        cols += (n >= 3) ? 2 : 1;
+        p += n;
+    }
+    return cols;
 }
 
 static void add_window(cdt_app_state_t *s, const char *label, double pct,
@@ -325,6 +364,11 @@ static void test_plan_counts_and_paging(void)
           "步骤原始顺序保留", "");
     check(v.plan_present && strcmp(v.plan_text, "PLAN 3/14") == 0,
           "NOW 摘要与 PLAN 页共用同一计数 PLAN 3/14", v.plan_text);
+
+    /* ZC7：当前步详情 = 首个 in_progress（3 done 后的 step-3） */
+    check(v.plan_current_present && v.plan_current_index == 3 &&
+              strcmp(v.plan_current_text, "step-3") == 0,
+          "ZC7 当前步详情=首个 in_progress（index 3）", v.plan_current_text);
 }
 
 static void test_plan_follows_selected(void)
@@ -365,6 +409,47 @@ static void test_plan_empty(void)
     check(!v.plan_present, "无计划 → NOW 摘要行隐藏", "");
 }
 
+static void test_plan_current_detail(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+    cdt_thread_t t = mk_thread("t1", CDT_THREAD_STATE_WORKING, 100, 0);
+    char long_text[CDT_MAX_PLAN_TEXT_BYTES + 1];
+    size_t i;
+
+    /* ZC7：全 completed（无 in_progress/pending）→ 面板隐藏 */
+    t.plan.total = 2;
+    t.plan.step_count = 2;
+    snprintf(t.plan.steps[0].text, sizeof(t.plan.steps[0].text), "done-a");
+    t.plan.steps[0].status = (uint8_t)CDT_STEP_STATUS_COMPLETED;
+    snprintf(t.plan.steps[1].text, sizeof(t.plan.steps[1].text), "done-b");
+    t.plan.steps[1].status = (uint8_t)CDT_STEP_STATUS_COMPLETED;
+    add_thread(&s, t);
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.plan_current_present, "ZC7 全完成 → 无当前步（面板隐藏）", "");
+
+    /* 只有 pending → 详情取首个 pending */
+    s.threads[0].plan.steps[0].status = (uint8_t)CDT_STEP_STATUS_PENDING;
+    s.threads[0].plan.steps[1].status = (uint8_t)CDT_STEP_STATUS_PENDING;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.plan_current_present && v.plan_current_index == 0 &&
+              strcmp(v.plan_current_text, "done-a") == 0,
+          "ZC7 无 in_progress → 首个 pending（index 0）", v.plan_current_text);
+
+    /* 长文本：按详情面板 66 列预算码点安全截断（列表行预算 34 列更短） */
+    for (i = 0; i < 100; i++) long_text[i] = (char)('a' + (i % 26));
+    long_text[100] = '\0';
+    snprintf(s.threads[0].plan.steps[0].text, sizeof(s.threads[0].plan.steps[0].text),
+             "%s", long_text);
+    cdt_present(&s, &r, 30000, &v);
+    check(v.plan_current_present && valid_utf8(v.plan_current_text) &&
+              display_cols(v.plan_current_text) <= CDT_VIEW_PLAN_CURRENT_MAX_COLS,
+          "ZC7 详情文本按 66 列预算截断", v.plan_current_text);
+    check(strlen(v.plan_current_text) > strlen(v.plan_steps[0].text),
+          "ZC7 详情比列表行（34 列）承载更多文本", v.plan_current_text);
+}
+
 /* ================== USAGE：窗口 / 倒计时 / context ================== */
 
 static void test_usage_windows(void)
@@ -387,6 +472,16 @@ static void test_usage_windows(void)
           "reset 倒计时 = resets_at - 业务now = 3600s", "");
     check(!v.usage_rows[1].reset_present, "resets_at 缺失 → RST --（reset_present=false）", "");
     check(v.usage_rows[1].pct == 8, "7.5 → 8（四舍五入）", "");
+
+    /* ZC7：图形化窗口块两行（标签行 duration 推导；倒计时行迁移 RST 格式化） */
+    check(strcmp(v.usage_rows[0].title, "5 HOUR WINDOW") == 0,
+          "ZC7 300min → \"5 HOUR WINDOW\"（原始 label 不上屏）", v.usage_rows[0].title);
+    check(strcmp(v.usage_rows[0].reset_text, "RESET IN 1:00") == 0,
+          "ZC7 3600s → \"RESET IN 1:00\"（≥1h 用 h:mm）", v.usage_rows[0].reset_text);
+    check(strcmp(v.usage_rows[1].title, "168 HOUR WINDOW") == 0,
+          "ZC7 10080min → \"168 HOUR WINDOW\"", v.usage_rows[1].title);
+    check(strcmp(v.usage_rows[1].reset_text, "RESET --") == 0,
+          "ZC7 resets_at 缺失 → \"RESET --\"", v.usage_rows[1].reset_text);
 
     /* fresh 增量：now=last_rx+60s → 倒计时同步减 60s */
     cdt_present(&s, &r, 90000, &v);
@@ -425,6 +520,18 @@ static void test_usage_expired_and_edge(void)
     check(v.usage_rows[2].pct == 100, "100% 顶格保留", "");
     check(v.usage_rows[1].pct_present && v.usage_rows[1].pct == 0,
           "0% 合法保留（数据为 0 即 0）", "");
+
+    /* ZC7：非整小时/过期/混合窗口的标签行与倒计时行 */
+    check(strcmp(v.usage_rows[0].title, "1 HOUR WINDOW") == 0 &&
+              strcmp(v.usage_rows[0].reset_text, "RESET EXPIRED") == 0,
+          "ZC7 已过 reset → \"RESET EXPIRED\"（60min → 1 HOUR WINDOW）",
+          v.usage_rows[0].reset_text);
+    check(strcmp(v.usage_rows[1].title, "5 MIN WINDOW") == 0,
+          "ZC7 5min → \"5 MIN WINDOW\"（非整小时）", v.usage_rows[1].title);
+    check(strcmp(v.usage_rows[2].title, "24 HOUR WINDOW") == 0,
+          "ZC7 1440min → \"24 HOUR WINDOW\"", v.usage_rows[2].title);
+    check(strcmp(v.usage_rows[3].title, "1 MIN WINDOW") == 0,
+          "ZC7 1min → \"1 MIN WINDOW\"", v.usage_rows[3].title);
 }
 
 static void test_usage_missing_and_context(void)
@@ -881,6 +988,7 @@ int main(void)
     test_details_branch_row();
     test_agents_empty();
     test_plan_counts_and_paging();
+    test_plan_current_detail();
     test_plan_follows_selected();
     test_plan_empty();
     test_usage_windows();

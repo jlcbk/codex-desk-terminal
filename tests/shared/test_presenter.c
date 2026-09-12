@@ -316,6 +316,83 @@ static void test_usage_and_plan(void)
     s.threads[0].plan.step_count = 0;
     cdt_present(&s, &r, 40000, &v);
     check(!v.plan_present, "无计划 → plan_present=false（UI 隐藏行）", "");
+    check(!v.plan_current_present, "ZC7 无计划 → 当前步详情隐藏", "");
+}
+
+static void test_usage_blocks_and_plan_current(void)
+{
+    /* ZC7：USAGE 图形化窗口块（标签行/倒计时行）+ PLAN 当前步详情（效果图 4/5）。 */
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    /* 基准：300min 整小时窗口、42.5%；generated_at 缺失 → 倒计时不可知 */
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.usage_rows[0].title, "5 HOUR WINDOW") == 0,
+          "ZC7 300min → \"5 HOUR WINDOW\"", v.usage_rows[0].title);
+    check(strcmp(v.usage_rows[0].reset_text, "RESET --") == 0,
+          "ZC7 generated_at 缺失 → \"RESET --\"（不猜倒计时）",
+          v.usage_rows[0].reset_text);
+    check(v.plan_current_present && v.plan_current_index == 1 &&
+              strcmp(v.plan_current_text, "s1") == 0,
+          "ZC7 当前步详情=in_progress 步骤 s1（index 1）", v.plan_current_text);
+
+    /* 业务时钟已知：<1h → hh:mm:ss；≥1h → h:mm（秒不冒充） */
+    s.generated_at_ms_present = true;
+    s.generated_at_ms = 1789002000000;
+    s.usage.windows[0].resets_at_ms_present = true;
+    s.usage.windows[0].resets_at_ms = s.generated_at_ms + 3599000; /* 59m59s */
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.usage_rows[0].reset_text, "RESET IN 00:59:59") == 0,
+          "ZC7 3599s → \"RESET IN 00:59:59\"", v.usage_rows[0].reset_text);
+
+    s.usage.windows[0].resets_at_ms = s.generated_at_ms + (int64_t)7554 * 1000;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.usage_rows[0].reset_text, "RESET IN 2:05") == 0,
+          "ZC7 7554s → \"RESET IN 2:05\"（≥1h h:mm）", v.usage_rows[0].reset_text);
+
+    /* 已过 reset → EXPIRED */
+    s.usage.windows[0].resets_at_ms = s.generated_at_ms - 60000;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.usage_rows[0].reset_text, "RESET EXPIRED") == 0,
+          "ZC7 已过 reset → \"RESET EXPIRED\"", v.usage_rows[0].reset_text);
+
+    /* 非整小时窗口 → "<M> MIN WINDOW"；45.9 → 46（条形与百分比同源取整） */
+    s.usage.windows[0].duration_mins = 45;
+    s.usage.windows[0].used_percent = 45.9;
+    s.usage.windows[0].resets_at_ms = s.generated_at_ms + 3600000;
+    cdt_present(&s, &r, 30000, &v);
+    check(strcmp(v.usage_rows[0].title, "45 MIN WINDOW") == 0,
+          "ZC7 45min → \"45 MIN WINDOW\"", v.usage_rows[0].title);
+    check(v.usage_rows[0].pct == 46, "ZC7 45.9 → 46（图形条填充同源）", "");
+
+    /* pct null → pct_present=false（UI 条画空 + 右显 "--"），标签行仍在 */
+    s.usage.windows[0].used_percent_present = false;
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.usage_rows[0].pct_present && v.usage_rows[0].pct == 0,
+          "ZC7 pct null → 条画空（0 段）+ 右显 \"--\"", "");
+
+    /* 全 completed → 无当前步；无 in_progress 有 pending → 首个 pending */
+    s.threads[0].plan.steps[1].status = CDT_STEP_STATUS_COMPLETED;
+    s.threads[0].plan.steps[2].status = CDT_STEP_STATUS_COMPLETED;
+    cdt_present(&s, &r, 30000, &v);
+    check(!v.plan_current_present, "ZC7 全 completed → 当前步详情隐藏", "");
+
+    s.threads[0].plan.steps[0].status = CDT_STEP_STATUS_PENDING;
+    s.threads[0].plan.steps[1].status = CDT_STEP_STATUS_PENDING;
+    cdt_present(&s, &r, 30000, &v);
+    check(v.plan_current_present && v.plan_current_index == 0 &&
+              strcmp(v.plan_current_text, "s0") == 0,
+          "ZC7 无 in_progress → 首个 pending（index 0）", v.plan_current_text);
+
+    /* 详情面板列预算（66 列）比列表行（34 列）宽：长文本截断上限更大 */
+    snprintf(s.threads[0].plan.steps[0].text, sizeof(s.threads[0].plan.steps[0].text),
+             "%s", "step text long enough to exceed thirty-four display columns");
+    cdt_present(&s, &r, 30000, &v);
+    check(v.plan_current_present &&
+              strlen(v.plan_current_text) > strlen(v.plan_steps[0].text) &&
+              valid_utf8(v.plan_current_text),
+          "ZC7 详情 66 列 > 列表行 34 列（码点安全）", v.plan_current_text);
 }
 
 static void test_fresh_timing(void)
@@ -525,6 +602,7 @@ int main(void)
     test_cancelled();
     test_no_tasks_and_no_state();
     test_usage_and_plan();
+    test_usage_blocks_and_plan_current();
     test_fresh_timing();
     test_duration_format();
     test_truncation();

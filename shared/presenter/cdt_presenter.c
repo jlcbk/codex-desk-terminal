@@ -573,6 +573,44 @@ void cdt_present(const cdt_app_state_t *state,
         view->plan_pages = (uint8_t)((th->plan.step_count + CDT_VIEW_ROWS_PER_PAGE - 1) /
                                      CDT_VIEW_ROWS_PER_PAGE);
         if (view->plan_pages == 0) view->plan_pages = 1; /* 空计划单页（暂无计划） */
+
+        /* ---- ZC7：PLAN 当前步详情（效果图 4）——首个 in_progress 优先，
+         * 无则首个 pending；全完成/无步骤 → present=false（UI 隐藏面板）。
+         * 文本用面板专属列预算（2 行 66 列），比列表行的 34 列宽。 ---- */
+        {
+            uint8_t cur = CDT_MAX_PLAN_STEPS; /* 哨兵：未选中 */
+
+            for (k = 0; k < th->plan.step_count; k++) {
+                if ((cdt_step_status_t)th->plan.steps[k].status ==
+                    CDT_STEP_STATUS_IN_PROGRESS) {
+                    cur = k;
+                    break;
+                }
+            }
+            if (cur == CDT_MAX_PLAN_STEPS) {
+                for (k = 0; k < th->plan.step_count; k++) {
+                    if ((cdt_step_status_t)th->plan.steps[k].status ==
+                        CDT_STEP_STATUS_PENDING) {
+                        cur = k;
+                        break;
+                    }
+                }
+            }
+            if (cur < CDT_MAX_PLAN_STEPS) {
+                view->plan_current_present = true;
+                view->plan_current_index = cur;
+                if (th->plan.steps[cur].text[0] != '\0') {
+                    trunc_cols(view->plan_current_text,
+                               sizeof(view->plan_current_text),
+                               th->plan.steps[cur].text,
+                               CDT_VIEW_PLAN_CURRENT_MAX_COLS);
+                }
+                else {
+                    set_str(view->plan_current_text,
+                            sizeof(view->plan_current_text), "--");
+                }
+            }
+        }
     }
 
     /* ---- 计划摘要 "PLAN c/t"（completed/total；total==0 → 无计划隐藏）---- */
@@ -631,6 +669,41 @@ usage_line:
                 else {
                     row->reset_present = false;
                     row->reset_in_s = 0;
+                }
+                /* ---- ZC7：图形化窗口块两行（效果图 5）----
+                 * 标签行由 duration_mins 推导（整 60 → "<N> HOUR WINDOW"，
+                 * 否则 "<M> MIN WINDOW"）；原始 label 不再上屏（字段保留）。
+                 * 倒计时行迁移原 UI 的 RST 格式化：≤1h hh:mm:ss，>1h h:mm
+                 * （分钟向下取整，不冒充秒级精度）；已过 EXPIRED；未知 "--"。 */
+                if (src->duration_mins >= 60u && (src->duration_mins % 60u) == 0u) {
+                    snprintf(row->title, sizeof(row->title), "%u HOUR WINDOW",
+                             (unsigned)(src->duration_mins / 60u));
+                }
+                else {
+                    snprintf(row->title, sizeof(row->title), "%u MIN WINDOW",
+                             (unsigned)src->duration_mins);
+                }
+                if (row->reset_present) {
+                    if (row->reset_in_s < 0) {
+                        set_str(row->reset_text, sizeof(row->reset_text),
+                                "RESET EXPIRED");
+                    }
+                    else {
+                        uint32_t s = (uint32_t)row->reset_in_s;
+
+                        if (s >= 3600u) {
+                            snprintf(row->reset_text, sizeof(row->reset_text),
+                                     "RESET IN %u:%02u", s / 3600u, (s % 3600u) / 60u);
+                        }
+                        else {
+                            snprintf(row->reset_text, sizeof(row->reset_text),
+                                     "RESET IN %02u:%02u:%02u",
+                                     s / 3600u, (s % 3600u) / 60u, s % 60u);
+                        }
+                    }
+                }
+                else {
+                    set_str(row->reset_text, sizeof(row->reset_text), "RESET --");
                 }
                 view->usage_count++;
             }

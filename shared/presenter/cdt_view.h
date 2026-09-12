@@ -96,6 +96,19 @@ typedef struct {
     uint8_t status;                 /* cdt_step_status_t 值（uint8 压缩存储） */
 } cdt_plan_step_row_t;
 
+/* ---- ZC7：USAGE 图形化窗口块（效果图 5 对齐）----
+ * 标签行由 duration_mins 推导（"<N> HOUR WINDOW"/"<M> MIN WINDOW"；
+ * 原始 label 不再上屏但字段保留供 manifest/测试）；倒计时行格式：
+ * ≤1h "RESET IN hh:mm:ss"、>1h "RESET IN h:mm"、已过 EXPIRED、未知 "--"。 */
+#define CDT_VIEW_USAGE_TITLE_BYTES 20       /* "65535 MIN WINDOW"=16B */
+#define CDT_VIEW_USAGE_RESET_BYTES 24       /* "RESET IN 596523:59"=18B */
+#define CDT_VIEW_USAGE_SEGMENTS 20          /* 分段进度条段数（UI 布局用） */
+
+/* ---- ZC7：PLAN 当前步详情面板（效果图 4 对齐）：面板文本区 2 行（272px），
+ * 按显示列预算截断（66 列 = ASCII 66 半宽 或 CJK 33 全宽，留 2 列余量）。 */
+#define CDT_VIEW_PLAN_CURRENT_MAX_COLS 66
+#define CDT_VIEW_PLAN_CURRENT_BYTES 112     /* (66/2)*3B +".."+NUL */
+
 typedef struct {
     char label[CDT_VIEW_WIN_LABEL_BYTES]; /* 取自数据（不编造窗口名）；空 → "--" */
     bool pct_present;   /* false → UI 显示 "--"（不猜百分比） */
@@ -103,6 +116,9 @@ typedef struct {
     uint16_t duration_mins; /* 实际窗口长度（分钟，来自数据） */
     bool reset_present;     /* resets_at_ms 为 null → false → UI 显示 "RST --" */
     int32_t reset_in_s;     /* 剩余秒；<0 = 已过 reset（不猜 0%，UI 显示 EXPIRED） */
+    /* ZC7：图形化窗口块两行（presenter 合成，UI 只读不上屏原始 label） */
+    char title[CDT_VIEW_USAGE_TITLE_BYTES];      /* "5 HOUR WINDOW"/"45 MIN WINDOW" */
+    char reset_text[CDT_VIEW_USAGE_RESET_BYTES]; /* "RESET IN hh:mm:ss"/"h:mm"/… */
 } cdt_usage_row_t;
 
 typedef struct {
@@ -186,6 +202,11 @@ typedef struct {
     bool plan_truncated;     /* 透传 */
     uint8_t plan_completed;  /* 只数 completed（in_progress/pending 不计） */
     uint8_t plan_pages;      /* ceil(step_count/4)；空计划 → 1 */
+    /* ZC7：当前步详情面板（效果图 4）。选择规则：首个 in_progress 优先，
+     * 无则首个 pending；两者皆无（全完成/无步骤）→ present=false 面板隐藏。 */
+    char plan_current_text[CDT_VIEW_PLAN_CURRENT_BYTES]; /* 完整文本（列预算截断） */
+    bool plan_current_present;
+    uint8_t plan_current_index; /* 0 基下标（UI 显示 n = index+1 / total） */
 
     /* ---- P2.2：USAGE 页数据（逐窗口行；label 来自数据）---- */
     cdt_usage_row_t usage_rows[CDT_MAX_USAGE_WINDOWS]; /* ≤4 窗口 */

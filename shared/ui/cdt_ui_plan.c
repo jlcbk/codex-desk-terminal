@@ -1,18 +1,24 @@
 /*
- * cdt_ui_plan.c — PLAN 页（P2.2，A2）
+ * cdt_ui_plan.c — PLAN 页（P2.2，A2；ZC7 编号 + 当前步详情面板）
  *
  * §6 PLAN 行：当前任务（选中线程）的步骤、完成数（只数 completed）、当前
  * 步骤标记；长计划分页（4 步/子页，nav.plan_page 切片）；无计划显示
  * "NO PLAN"（暂无计划；ASCII 字体下用英文等义文案，CJK 字体归后续任务）。
  * 步骤标记：[x]=completed、[>]=in_progress（当前步骤反白强调）、[ ]=pending。
+ * ZC7（效果图 4 对齐）：每步行首加 1 基编号（跨子页连续，1-8）；底部新增
+ * 当前步详情面板——细边框盒内显示当前 in_progress 步骤完整文本（无则首个
+ * pending；都没有 → 面板隐藏），盒右下角 "n / total"。列表行与面板几何
+ * 位置恒定（面板隐藏不回流）。
  */
 #include <stdio.h>
 
 #include "cdt_ui_internal.h"
 #include "cdt_ui_pages.h"
 
-#define PLAN_ROW_H 34
-#define PLAN_ROW_Y0 92
+#define PLAN_ROW_H 30
+#define PLAN_ROW_Y0 88
+#define PLAN_DETAIL_Y 212   /* 详情面板（4 行列表 88..208 之下、底栏 266 之上） */
+#define PLAN_DETAIL_H 50
 
 typedef struct {
     lv_obj_t *root;
@@ -21,8 +27,12 @@ typedef struct {
     lv_obj_t *banner_label;
     lv_obj_t *header;    /* "PLAN 3/14"（+ TRUNCATED） */
     lv_obj_t *rows[CDT_VIEW_ROWS_PER_PAGE];
+    lv_obj_t *row_num[CDT_VIEW_ROWS_PER_PAGE];  /* ZC7：1 基编号（跨子页连续） */
     lv_obj_t *row_mark[CDT_VIEW_ROWS_PER_PAGE]; /* [x]/[>]/[ ] */
     lv_obj_t *row_text[CDT_VIEW_ROWS_PER_PAGE];
+    lv_obj_t *detail_panel; /* ZC7：当前步详情边框盒（含文本 + n/total） */
+    lv_obj_t *detail_text;  /* 当前步完整文本（2 行 wrap） */
+    lv_obj_t *detail_n;     /* 右下角 "n / total" */
     lv_obj_t *empty;     /* "NO PLAN" */
     lv_obj_t *page_ind;
     lv_obj_t *mute;
@@ -51,13 +61,33 @@ void cdt_ui_plan_create(void)
         pl.rows[i] = lv_obj_create(pl.root);
         cdt_uii_box(pl.rows[i], 8, y, 384, PLAN_ROW_H);
 
-        pl.row_mark[i] = cdt_uii_text(pl.rows[i], F_BAR, 0, 7, 34, 18);
+        pl.row_num[i] = cdt_uii_text(pl.rows[i], F_BAR, 2, 6, 20, 18);
+        lv_obj_set_style_text_align(pl.row_num[i], LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 
-        pl.row_text[i] = cdt_uii_text(pl.rows[i], F_BAR, 38, 7, 346, 18);
+        pl.row_mark[i] = cdt_uii_text(pl.rows[i], F_BAR, 24, 6, 40, 18);
+
+        pl.row_text[i] = cdt_uii_text(pl.rows[i], F_BAR, 64, 6, 316, 18);
         lv_label_set_long_mode(pl.row_text[i], LV_LABEL_LONG_DOT);
 
         lv_obj_add_flag(pl.rows[i], LV_OBJ_FLAG_HIDDEN);
     }
+
+    /* ---- ZC7：当前步详情面板（效果图 4）：细边框盒（1px），内含当前步
+     * 完整文本（272px 宽 2 行 wrap，presenter 按 66 列预算截断）与右下角
+     * "n / total"；无当前步 → 整盒隐藏（位置恒定，不回流）。 ---- */
+    pl.detail_panel = lv_obj_create(pl.root);
+    cdt_uii_box(pl.detail_panel, 8, PLAN_DETAIL_Y, 384, PLAN_DETAIL_H);
+    lv_obj_set_style_border_color(pl.detail_panel, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(pl.detail_panel, 1, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(pl.detail_panel, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_clear_flag(pl.detail_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    pl.detail_text = cdt_uii_text(pl.detail_panel, F_BAR, 6, 4, 272, 42);
+
+    pl.detail_n = cdt_uii_text(pl.detail_panel, F_BAR, 282, 28, 96, 18);
+    lv_obj_set_style_text_align(pl.detail_n, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
+
+    lv_obj_add_flag(pl.detail_panel, LV_OBJ_FLAG_HIDDEN);
 
     pl.empty = cdt_uii_text(pl.root, F_BODY, 8, 150, 384, 24);
     lv_obj_set_style_text_align(pl.empty, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -80,6 +110,7 @@ void cdt_ui_plan_apply(const cdt_view_t *view, const cdt_nav_t *nav)
         for (i = 0; i < CDT_VIEW_ROWS_PER_PAGE; i++) {
             lv_obj_add_flag(pl.rows[i], LV_OBJ_FLAG_HIDDEN);
         }
+        lv_obj_add_flag(pl.detail_panel, LV_OBJ_FLAG_HIDDEN); /* 无当前步详情 */
         lv_obj_remove_flag(pl.empty, LV_OBJ_FLAG_HIDDEN); /* 暂无计划 */
         cdt_uii_set_text(pl.header, "");
         cdt_uii_set_text(pl.sub_ind, "");
@@ -110,6 +141,11 @@ void cdt_ui_plan_apply(const cdt_view_t *view, const cdt_nav_t *nav)
             uint8_t idx = (uint8_t)(start + (uint8_t)i);
             if (idx < view->plan_step_count) {
                 const cdt_plan_step_row_t *row = &view->plan_steps[idx];
+                char num[8];
+
+                /* ZC7：1 基编号，跨子页连续（第 2 子页首行 = 5） */
+                snprintf(num, sizeof(num), "%u", (unsigned)(idx + 1u));
+                cdt_uii_set_text(pl.row_num[i], num);
 
                 switch ((cdt_step_status_t)row->status) {
                     case CDT_STEP_STATUS_COMPLETED:
@@ -146,6 +182,29 @@ void cdt_ui_plan_apply(const cdt_view_t *view, const cdt_nav_t *nav)
         snprintf(buf, sizeof(buf), "%u/%u", (unsigned)(sub + 1u), (unsigned)pages);
         cdt_uii_set_text(pl.sub_ind, buf);
         cdt_uii_page_ind_set(pl.page_ind, "PLAN", sub + 1, pages);
+    }
+
+    /* ---- ZC7：当前步详情面板（效果图 4）：in_progress 优先、无则首 pending
+     * （presenter 裁决 present）；完整文本 2 行 wrap，右下角 "n / total"。 ---- */
+    if (view->plan_current_present) {
+        char cur_buf[CDT_VIEW_PLAN_CURRENT_BYTES];
+
+        cdt_ui_ascii_safe(cur_buf, sizeof(cur_buf), view->plan_current_text);
+        lv_label_set_text(pl.detail_text, cur_buf);
+
+        if (view->plan_total > 0) {
+            snprintf(buf, sizeof(buf), "%u / %u",
+                     (unsigned)(view->plan_current_index + 1u),
+                     (unsigned)view->plan_total);
+            cdt_uii_set_text(pl.detail_n, buf);
+        }
+        else {
+            cdt_uii_set_text(pl.detail_n, "");
+        }
+        lv_obj_remove_flag(pl.detail_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    else {
+        lv_obj_add_flag(pl.detail_panel, LV_OBJ_FLAG_HIDDEN);
     }
 
     lv_label_set_text(pl.mute, view->muted ? "[x] MUTED" : "[ ] SOUND ON");
