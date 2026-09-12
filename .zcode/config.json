@@ -8,7 +8,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "SessionStart"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "SessionStart"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -21,7 +21,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "UserPromptSubmit"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "UserPromptSubmit"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -34,7 +34,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "PreToolUse"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "PreToolUse"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -47,7 +47,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "PostToolUse"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "PostToolUse"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -60,7 +60,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "PostToolUseFailure"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "PostToolUseFailure"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -73,7 +73,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "PermissionRequest"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "PermissionRequest"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
@@ -86,7 +86,7 @@
             {
               "type": "process",
               "command": "python3",
-              "args": ["${CLAUDE_PROJECT_DIR}/scripts/zcode_hook_dump.py", "Stop"],
+              "args": ["/Users/cui/Documents/Projects/codex-desk-terminal/scripts/zcode_hook_dump.py", "Stop"],
               "timeoutMs": 3000,
               "statusMessage": "zcode_hook_dump"
             }
