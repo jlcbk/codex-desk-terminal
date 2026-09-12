@@ -143,18 +143,20 @@ def test_post_tool_use_failure_mints_no_state_events(mapper):
 
 def test_user_prompt_submit_mints_synthetic_turn_start(mapper):
     """真机裁决 2026-09-12：rollout 的 model_io 行要到调用完成才落盘，
-    "提交后思考"阶段文件静默——提交即合成新 turn 起点，屏幕才能立刻
-    从上一轮 done 翻回 working。"""
+    "提交后思考"阶段文件静默——提交即合成新 turn 起点 + THINKING 相位，
+    屏幕才能立刻从上一轮 done 翻回（思考中）而不是停在 done。"""
     e1 = mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
     e2 = mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
-    assert [e.type for e in e1] == [ev.EVENT_TURN_STARTED]
+    assert [e.type for e in e1] == [ev.EVENT_TURN_STARTED, ev.EVENT_ITEM_STARTED]
     assert e1[0].turn_id == "prompt-1"
+    assert e1[1].turn_id == "prompt-1"
+    assert e1[1].item_kind == "reasoning"  # reducer 唯一放行 THINKING 的路径
     assert e2[0].turn_id == "prompt-2"  # 递增保证与 reducer 当前 turn 必然不同
 
 
-def test_done_then_user_prompt_flips_to_working(mapper):
-    """done → 用户提交 → 立即 working（reducer 终态门闸被新 turn 正确清除）；
-    随后真实 turnId 首见接管，Stop 仍以真实 id 归结为 done。"""
+def test_done_then_user_prompt_flips_to_thinking_then_working(mapper):
+    """done → 用户提交 → thinking（思考相位）→ 真实 turnId 首见 → working；
+    Stop 以真实 id 归结回 done。"""
     from bridge.state.engine import StateEngine, SOURCE_ZCODE_OBSERVED
     eng = StateEngine("t-prompt", source_kind=SOURCE_ZCODE_OBSERVED)
     ticks = iter(range(1000, 1000000, 10))
@@ -171,14 +173,28 @@ def test_done_then_user_prompt_flips_to_working(mapper):
     assert snap["threads"][0]["state"] == "done"
 
     snap = flow(mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None))
-    assert snap["threads"][0]["state"] == "working"
+    assert snap["threads"][0]["state"] == "thinking"
 
-    # 真实 turn 首见（新 turnId）→ 仍 working；Stop 以真实 id 归结 → done。
+    # 真实 turn 首见（新 turnId）→ 模型调用已完成、工作可观察 → working；
+    # Stop 以真实 id 归结 → done。
     snap = flow(mapper.rollout_record(SID, model_io(turn_id="t-real-2")))
     assert snap["threads"][0]["state"] == "working"
     snap = flow(mapper.spool_event(zc.SPOOL_STOP, SID, None))
     assert snap["threads"][0]["state"] == "done"
     assert snap["threads"][0]["turn_id"] == "t-real-2"
+
+
+def test_post_tool_use_maps_thinking_pretool_maps_working(mapper):
+    """工具结果返回后模型进入下一轮处理 → THINKING；工具开始执行 → WORKING。"""
+    flow = mapper.spool_event
+    flow(zc.SPOOL_SESSION_START, SID, None)
+    flow(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    events = flow(zc.SPOOL_POST_TOOL_USE, SID, "bash")
+    assert [e.type for e in events] == [ev.EVENT_ITEM_STARTED]
+    assert events[0].item_kind == "reasoning"
+    events = flow(zc.SPOOL_PRE_TOOL_USE, SID, "bash")
+    assert [e.type for e in events] == [ev.EVENT_THREAD_STATUS]
+    assert events[0].status == ev.THREAD_STATUS_ACTIVE
 
 
 def test_session_start_mints_thread_started_once(mapper):
@@ -214,9 +230,10 @@ def test_pretooluse_resolves_pending_then_active(mapper):
         ev.EVENT_SERVER_REQUEST_RESOLVED, ev.EVENT_THREAD_STATUS]
     assert events[0].request_id == approval.request_id
     assert events[1].status == ev.THREAD_STATUS_ACTIVE
-    # 再次 PreToolUse：无 pending 可撤，只剩 active
+    # 再次 PostToolUse：无 pending 可撤，只剩合成 reasoning（THINKING 相位）
     events2 = mapper.spool_event(zc.SPOOL_POST_TOOL_USE, SID, "bash")
-    assert [e.type for e in events2] == [ev.EVENT_THREAD_STATUS]
+    assert [e.type for e in events2] == [ev.EVENT_ITEM_STARTED]
+    assert events2[0].item_kind == "reasoning"
 
 
 def test_stop_resolves_pending_approval(mapper):

@@ -361,9 +361,11 @@ class ZcodeEventMapper:
         """hook 事件名 → 事件列表。
 
         PermissionRequest → needs_you（summary=工具名，绝不放 tool_input）；
-        PreToolUse/PostToolUse → 撤销合成等待 + active；Stop → turn 归结 +
-        idle；SessionStart → thread_started（去重，主会话无 cwd 事实 project
-        留空）；UserPromptSubmit → 合成新 turn 起点（真机裁决 2026-09-12：
+        PreToolUse → 撤销合成等待 + active（工具执行=可观察工作）；PostToolUse →
+        撤销合成等待 + 合成 reasoning item（模型处理工具结果=THINKING，相位
+        映射裁决见分支注释）；Stop → turn 归结 + idle；SessionStart →
+        thread_started（去重，主会话无 cwd 事实 project 留空）；UserPromptSubmit
+        → 合成新 turn 起点 + reasoning item（THINKING；真机裁决 2026-09-12：
         rollout 的 model_io 行要到调用完成才落盘，"提交后思考"阶段文件静默，
         不发起点则屏幕停在上一轮 done；真实 turnId 首见时经 st.last_turn 接管
         后续归结）；PostToolUseFailure 只作活动记账（无状态事件，工具失败≠
@@ -382,7 +384,11 @@ class ZcodeEventMapper:
             tid = "%s%d" % (PROMPT_TURN_PREFIX, self._prompt_seq)
             st.turns_seen.add(tid)
             st.last_turn = tid
-            return [ev.turn_started(session_id, tid, at_ms=at_ms)]
+            # 提交后模型必然进入处理相位：按协议 THINKING 呈现（A0 裁决
+            # 2026-09-12：ZCode 无实时 reasoning 信号，此为相位映射而非
+            # 证据断言——reasoningText 证据要等调用完成才落盘）。
+            return [ev.turn_started(session_id, tid, at_ms=at_ms),
+                    ev.item_started(session_id, tid, "reasoning", at_ms=at_ms)]
         if event_name == SPOOL_POST_TOOL_USE_FAILURE:
             return []
         if event_name == SPOOL_PERMISSION_REQUEST:
@@ -396,11 +402,18 @@ class ZcodeEventMapper:
                 summary = "等待审批"
             return [ev.approval_requested(session_id, request_id, summary,
                                           at_ms=at_ms)]
-        if event_name in (SPOOL_PRE_TOOL_USE, SPOOL_POST_TOOL_USE):
-            # 审批已放行/工具已执行：撤销该会话全部合成等待，再报活动。
+        if event_name == SPOOL_PRE_TOOL_USE:
+            # 工具开始执行：可观察工作 → WORKING。
             events = self._resolve_pending(session_id, at_ms)
             events.append(ev.thread_status(session_id, ev.THREAD_STATUS_ACTIVE,
                                            at_ms=at_ms))
+            return events
+        if event_name == SPOOL_POST_TOOL_USE:
+            # 工具结果已返回：模型进入下一轮处理 → THINKING（相位映射，
+            # 同 UserPromptSubmit 裁决；turn_id 取最近记账，None 则不被门闸）。
+            events = self._resolve_pending(session_id, at_ms)
+            events.append(ev.item_started(session_id, st.last_turn, "reasoning",
+                                          at_ms=at_ms))
             return events
         if event_name == SPOOL_STOP:
             events = self._resolve_pending(session_id, at_ms)
