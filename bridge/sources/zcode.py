@@ -128,6 +128,8 @@ RESET_TIME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})"
 # 占位 turn_id（诚实的最小占位，绝不编造上游不存在的 id 语义）。
 STOP_TURN_PLACEHOLDER = "stop"    # Stop 时该会话从未见过 turnId
 ERROR_TURN_PLACEHOLDER = "error"  # error 记录缺失 turnId 时
+# UserPromptSubmit 合成 turn 起点命名空间（真机裁决：提交后思考阶段文件静默）。
+PROMPT_TURN_PREFIX = "prompt-"
 
 # 冷启动/重读尾巴上限：首次跟踪一个 rollout 文件最多回放这么多条记录。
 # 状态从尾部收敛（当前 turn 必在尾部），同时防止长历史文件把首拍事件量撑爆。
@@ -262,6 +264,7 @@ class ZcodeEventMapper:
         self._sessions = {}
         self._agents_started = set()   # 已发过 thread_started 的子代理线程
         self._synthetic_next = -1      # 合成审批 id 计数器（负数递减）
+        self._prompt_seq = 0           # UserPromptSubmit 合成 turn 计数器（递增）
         # 计数器（报告用；只有计数，无内容）。
         self.records_seen = 0
         self.non_model_io = 0
@@ -360,8 +363,11 @@ class ZcodeEventMapper:
         PermissionRequest → needs_you（summary=工具名，绝不放 tool_input）；
         PreToolUse/PostToolUse → 撤销合成等待 + active；Stop → turn 归结 +
         idle；SessionStart → thread_started（去重，主会话无 cwd 事实 project
-        留空）；UserPromptSubmit/PostToolUseFailure 只作活动记账（无状态事件，
-        理由见分支注释）。未知事件名忽略并计数。
+        留空）；UserPromptSubmit → 合成新 turn 起点（真机裁决 2026-09-12：
+        rollout 的 model_io 行要到调用完成才落盘，"提交后思考"阶段文件静默，
+        不发起点则屏幕停在上一轮 done；真实 turnId 首见时经 st.last_turn 接管
+        后续归结）；PostToolUseFailure 只作活动记账（无状态事件，工具失败≠
+        整轮失败，error 由 rollout_record 合流）。未知事件名忽略并计数。
         """
         st = self._state(session_id)
         if event_name == SPOOL_SESSION_START:
@@ -369,11 +375,15 @@ class ZcodeEventMapper:
                 return []
             st.started_emitted = True
             return [ev.thread_started(session_id, "", at_ms=at_ms)]
-        if event_name in (SPOOL_USER_PROMPT_SUBMIT, SPOOL_POST_TOOL_USE_FAILURE):
-            # UserPromptSubmit：turn 真源是 rollout 的 turn_started，此处提前发
-            # active 会被 reducer 的 finished 门闸吞掉（不伪造"已开始"）；
-            # PostToolUseFailure：工具失败≠整轮失败（§7.1：需与 rollout error
-            # 合流才构成 error，error 由 rollout_record 负责）。
+        if event_name == SPOOL_USER_PROMPT_SUBMIT:
+            # 合成 turn 起点用独立命名空间（"prompt-N"），与真实 turnId/占位
+            # "stop" 必然不同 → reducer 视为新 turn，正确清除上一轮 DONE。
+            self._prompt_seq += 1
+            tid = "%s%d" % (PROMPT_TURN_PREFIX, self._prompt_seq)
+            st.turns_seen.add(tid)
+            st.last_turn = tid
+            return [ev.turn_started(session_id, tid, at_ms=at_ms)]
+        if event_name == SPOOL_POST_TOOL_USE_FAILURE:
             return []
         if event_name == SPOOL_PERMISSION_REQUEST:
             request_id = self._synthetic_next

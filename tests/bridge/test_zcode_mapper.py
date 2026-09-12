@@ -136,10 +136,49 @@ def test_stop_without_any_turn_uses_placeholder_stop(mapper):
     assert events[1].status == ev.THREAD_STATUS_IDLE
 
 
-def test_activity_only_spool_events_mint_no_state_events(mapper):
-    # UserPromptSubmit / PostToolUseFailure：turn 真源在 rollout；工具失败≠整轮失败
-    assert mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None) == []
+def test_post_tool_use_failure_mints_no_state_events(mapper):
+    # 工具失败≠整轮失败（error 由 rollout_record 合流），只作活动记账。
     assert mapper.spool_event(zc.SPOOL_POST_TOOL_USE_FAILURE, SID, "bash") == []
+
+
+def test_user_prompt_submit_mints_synthetic_turn_start(mapper):
+    """真机裁决 2026-09-12：rollout 的 model_io 行要到调用完成才落盘，
+    "提交后思考"阶段文件静默——提交即合成新 turn 起点，屏幕才能立刻
+    从上一轮 done 翻回 working。"""
+    e1 = mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    e2 = mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    assert [e.type for e in e1] == [ev.EVENT_TURN_STARTED]
+    assert e1[0].turn_id == "prompt-1"
+    assert e2[0].turn_id == "prompt-2"  # 递增保证与 reducer 当前 turn 必然不同
+
+
+def test_done_then_user_prompt_flips_to_working(mapper):
+    """done → 用户提交 → 立即 working（reducer 终态门闸被新 turn 正确清除）；
+    随后真实 turnId 首见接管，Stop 仍以真实 id 归结为 done。"""
+    from bridge.state.engine import StateEngine, SOURCE_ZCODE_OBSERVED
+    eng = StateEngine("t-prompt", source_kind=SOURCE_ZCODE_OBSERVED)
+    ticks = iter(range(1000, 1000000, 10))
+
+    def flow(events):
+        snap = None
+        for event in events:
+            snap = eng.apply(event, next(ticks))
+        return snap
+
+    snap = flow(mapper.spool_event(zc.SPOOL_SESSION_START, SID, None))
+    snap = flow(mapper.rollout_record(SID, model_io(turn_id="t-real")))
+    snap = flow(mapper.spool_event(zc.SPOOL_STOP, SID, None))
+    assert snap["threads"][0]["state"] == "done"
+
+    snap = flow(mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None))
+    assert snap["threads"][0]["state"] == "working"
+
+    # 真实 turn 首见（新 turnId）→ 仍 working；Stop 以真实 id 归结 → done。
+    snap = flow(mapper.rollout_record(SID, model_io(turn_id="t-real-2")))
+    assert snap["threads"][0]["state"] == "working"
+    snap = flow(mapper.spool_event(zc.SPOOL_STOP, SID, None))
+    assert snap["threads"][0]["state"] == "done"
+    assert snap["threads"][0]["turn_id"] == "t-real-2"
 
 
 def test_session_start_mints_thread_started_once(mapper):
