@@ -8,7 +8,10 @@
 
 | ID | Owner | 状态 | 依赖 | 提交 | 验证命令 | 证据 | 阻塞项 |
 |---|---|---|---|---|---|---|---|
-| Z1-Z6 前置核验 | A0（主会话） | done | P3.6 结论 | （本次提交） | 本机实测：rollout/metadata 逐字段解析、157 个 agent metadata status 枚举、OpenViking hook 脚本反推 stdin 字段、官方插件文档核对事件清单；dump hook 已装工作区（`.zcode/config.json`+`scripts/zcode_hook_dump.py`） | docs/P3.6_DESKTOP_OBSERVATION.md §7/§7.1、artifacts/zcode_hooks/dump.jsonl（下次新会话开始积累） | Z2 精确 stdin schema 待新会话 dump 采样（不阻塞开发：hook 只当触发器，真源=rollout）；ZCode 源为新增线，协议 source.kind 需扩 `zcode_observed`（zcode.py 任务处置） |
+| Z1-Z6 前置核验 | A0（主会话） | done | P3.6 结论 | 1c8883f | 本机实测：rollout/metadata 逐字段解析、157 个 agent metadata status 枚举、OpenViking hook 脚本反推 stdin 字段、官方插件文档核对事件清单；dump hook 已装工作区（`.zcode/config.json`+`scripts/zcode_hook_dump.py`） | docs/P3.6_DESKTOP_OBSERVATION.md §7/§7.1、artifacts/zcode_hooks/dump.jsonl（下次新会话开始积累） | Z2 精确 stdin schema 待新会话 dump 采样（不阻塞开发：hook 只当触发器，真源=rollout）；ZCode 源为新增线，协议 source.kind 需扩 `zcode_observed`（zcode.py 任务处置） |
+| 契约 v1.1：source.kind 增补 zcode_observed | A0 | done | Z1-Z6 | 0f7bfbe | `sh scripts/build_shared.sh`（A0 复跑 38+145 PASS 含新锚点用例）、check_protocol 16/16、presenter 67、bridge pytest 101 | shared/state/codex_state.h、cdt_parser.c、bridge/state/engine.py、protocol/state.schema.json、docs/INTERFACES.md §3、tests/shared/test_main.c | 旧端 UNKNOWN_ENUM 拒包 fail-closed；bridge 发 zcode_observed 须配新固件（成对部署，§3 行已注明） |
+| ZC1 ZCode 观察器核心 | A1（子代理） | doing | 契约 v1.1+Z1-Z6 硬事实 | | | | 派发中 |
+| ZC2 服务接线+hook 安装器+传输 e2e | A2（子代理） | doing | 契约 v1.1+ZC1 接口定义 | | | | 派发中；不触碰用户级 ~/.zcode 配置（安装器只交付不运行） |
 
 ## P0：事实确认与契约冻结
 
