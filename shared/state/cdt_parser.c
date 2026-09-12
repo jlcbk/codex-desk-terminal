@@ -170,6 +170,8 @@ static cdtj_err_t parse_source(cdt_json_t *j, cdt_source_t *out)
                     out->kind = CDT_SOURCE_CODEX_BRIDGE_OWNED;
                 } else if (n == 21 && memcmp(tmp, "codex_desktop_observed", 21) == 0) {
                     out->kind = CDT_SOURCE_CODEX_DESKTOP_OBSERVED;
+                } else if (n == 14 && memcmp(tmp, "zcode_observed", 14) == 0) {
+                    out->kind = CDT_SOURCE_ZCODE_OBSERVED; /* v1.1 增补 */
                 } else {
                     return CDT_PARSE_ERR_UNKNOWN_ENUM;
                 }

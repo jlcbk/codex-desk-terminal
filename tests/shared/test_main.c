@@ -254,10 +254,38 @@ static void test_frame_bits(void)
     check(cdt_frame_get(&f, 400, 0) == -1, "越界坐标忽略", NULL);
 }
 
+static void test_zcode_kind(void)
+{
+    /* v1.1 增补：source.kind=zcode_observed 须被接受并映射到新枚举。 */
+    static const char *ZCODE_TMPL =
+        "{\"schema_version\":1,\"kind\":\"state\",\"bridge_epoch\":\"t-1\",\"seq\":%llu,"
+        "\"generated_at_ms\":null,"
+        "\"source\":{\"kind\":\"zcode_observed\",\"connected\":true,\"stale\":false,"
+        "\"last_event_at_ms\":null},"
+        "\"selected_thread_id\":null,\"threads_total\":0,\"threads_truncated\":false,"
+        "\"threads\":[],\"usage\":{\"available\":false,\"updated_at_ms\":null,"
+        "\"windows_total\":0,\"windows_truncated\":false,\"windows\":[]}}";
+    cdt_state_store_t st;
+    char buf[1024];
+    char detail[128];
+    cdt_parse_result_t r;
+    const cdt_app_state_t *snap;
+
+    cdt_state_store_init(&st);
+    snprintf(buf, sizeof(buf), ZCODE_TMPL, 1ULL);
+    r = cdt_state_store_apply(&st, buf, strlen(buf));
+    snprintf(detail, sizeof(detail), "实际码=%d", (int)r);
+    check(r == CDT_PARSE_OK, "kind=zcode_observed（v1.1 增补）→ OK", detail);
+    snap = cdt_state_store_snapshot(&st);
+    check(snap != NULL && snap->source.kind == CDT_SOURCE_ZCODE_OBSERVED,
+          "kind 映射到 CDT_SOURCE_ZCODE_OBSERVED", NULL);
+}
+
 int main(int argc, char **argv)
 {
     int i;
     test_seq_semantics();
+    test_zcode_kind();
     test_keep_last_valid();
     test_epoch_reset();
     test_size_guard();

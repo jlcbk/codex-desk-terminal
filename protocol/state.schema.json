@@ -50,8 +50,8 @@
       "required": ["kind", "connected", "stale", "last_event_at_ms"],
       "properties": {
         "kind": {
-          "enum": ["mock", "codex_bridge_owned", "codex_desktop_observed"],
-          "description": "§3 source.kind 行：不可把受控会话标为桌面旁听（编码侧语义约束）。"
+          "enum": ["mock", "codex_bridge_owned", "codex_desktop_observed", "zcode_observed"],
+          "description": "§3 source.kind 行：不可把受控会话标为桌面旁听（编码侧语义约束）。zcode_observed 为 v1.1 增补（A0 2026-09-12，ZCode 会话观察源）；旧端 UNKNOWN_ENUM 拒包，bridge 与固件须成对部署。"
         },
         "connected": {
           "type": "boolean",

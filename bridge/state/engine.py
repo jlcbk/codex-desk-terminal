@@ -16,6 +16,7 @@ from . import reducer, render as render_mod
 SOURCE_MOCK = "mock"
 SOURCE_BRIDGE_OWNED = "codex_bridge_owned"
 SOURCE_DESKTOP_OBSERVED = "codex_desktop_observed"
+SOURCE_ZCODE_OBSERVED = "zcode_observed"  # v1.1 增补（A0 2026-09-12）
 
 MAX_EPOCH_BYTES = render_mod.MAX_EPOCH_BYTES
 
@@ -32,7 +33,8 @@ def _validate_epoch(bridge_epoch: str) -> str:
 class StateEngine:
     def __init__(self, bridge_epoch: str, *, source_kind: str = SOURCE_MOCK,
                  utc_anchor_ms: int = 0) -> None:
-        if source_kind not in (SOURCE_MOCK, SOURCE_BRIDGE_OWNED, SOURCE_DESKTOP_OBSERVED):
+        if source_kind not in (SOURCE_MOCK, SOURCE_BRIDGE_OWNED,
+                               SOURCE_DESKTOP_OBSERVED, SOURCE_ZCODE_OBSERVED):
             raise ValueError(f"unknown source kind: {source_kind!r}")
         self.bridge_epoch = _validate_epoch(bridge_epoch)
         self.source_kind = source_kind

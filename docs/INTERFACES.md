@@ -76,7 +76,7 @@
 | bridge_epoch | Bridge每次启动生成新ID，1–64 UTF-8字节；仅在认证连接/重新握手中接受变化 |
 | seq | 同epoch严格递增安全整数，0至2^53−1；每次实际发送快照递增，包括存活快照；同epoch≤已应用值丢弃 |
 | 时间 | *_at_ms为UTC Unix毫秒或null；elapsed_ms/waiting_ms为非负持续时间；不用墙钟判断低压/重连 |
-| source.kind | mock / codex_bridge_owned / codex_desktop_observed；不可把受控会话标为桌面旁听 |
+| source.kind | mock / codex_bridge_owned / codex_desktop_observed / zcode_observed；不可把受控会话标为桌面旁听。zcode_observed=v1.1 增补（A0 2026-09-12）：ZCode 会话文件观察源；旧端 UNKNOWN_ENUM 拒包（fail-closed 不半应用），bridge 与固件须成对部署 |
 | source.connected/stale | 上游状态，独立于设备无线连接；上游失联保持最后值并标陈旧 |
 | threads | 最多8项；每项id唯一；总数≥数组长度；截断有标记。计数与总数类字段（threads_total、plan.total、windows_total、attention.pending_count）上限65535，与设备uint16存储对齐 |
 | 字符串 | id 类字段（thread id / turn_id / usage window id）统一≤128字节、project≤96、activity/attention.summary≤192、plan.text≤128、usage.label≤48；按UTF-8完整码点截断 |

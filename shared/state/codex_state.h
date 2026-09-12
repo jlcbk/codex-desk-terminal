@@ -68,12 +68,14 @@ extern "C" {
 /* 枚举（全部带 invalid=0 哨兵；解码到 INVALID 视为 ERR_UNKNOWN_ENUM）   */
 /* ------------------------------------------------------------------ */
 
-/* §3 source.kind 行 */
+/* §3 source.kind 行。zcode_observed = v1.1 增补（A0 2026-09-12）：ZCode 会话
+ * 文件观察源；旧端 UNKNOWN_ENUM 拒包（fail-closed），bridge 与固件须成对部署。 */
 typedef enum {
     CDT_SOURCE_INVALID = 0,
     CDT_SOURCE_MOCK = 1,
     CDT_SOURCE_CODEX_BRIDGE_OWNED = 2,
-    CDT_SOURCE_CODEX_DESKTOP_OBSERVED = 3
+    CDT_SOURCE_CODEX_DESKTOP_OBSERVED = 3,
+    CDT_SOURCE_ZCODE_OBSERVED = 4
 } cdt_source_kind_t;
 
 /* §3 state 行：idle / thinking / working / needs_you / done / error。
