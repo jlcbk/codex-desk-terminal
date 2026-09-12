@@ -661,8 +661,8 @@ usage_line:
             else {
                 trunc_cols(short_label, sizeof(short_label), w0->label, 4);
             }
-            snprintf(view->now_usage_text, sizeof(view->now_usage_text), "%s %u%%",
-                     short_label, pct);
+            snprintf(view->now_usage_text, sizeof(view->now_usage_text),
+                     "%.17s %u%%", short_label, pct);
         }
         else {
             view->now_usage_text[0] = '\0';
@@ -696,7 +696,7 @@ usage_line:
             }
             if (pct > 100u) pct = 100u;
             snprintf(view->context_line, sizeof(view->context_line),
-                     "CONTEXT %s / %s (%u%%)", used_k, cap_k, pct);
+                     "CONTEXT %.10s / %.10s (%u%%)", used_k, cap_k, pct);
         }
         else if (th != NULL && th->context.used_tokens_present) {
             char used_k[CDT_VIEW_TOKEN_TEXT_BYTES];
@@ -705,7 +705,7 @@ usage_line:
                          (th->context.used_tokens > (int64_t)UINT32_MAX)
                              ? UINT32_MAX : (uint32_t)th->context.used_tokens);
             snprintf(view->context_line, sizeof(view->context_line),
-                     "CONTEXT %s TOKENS", used_k);
+                     "CONTEXT %.10s TOKENS", used_k);
         }
         else {
             set_str(view->context_line, sizeof(view->context_line), "CONTEXT --");
@@ -721,10 +721,11 @@ usage_line:
         if (w->used_percent_present) {
             unsigned pct = (unsigned)(w->used_percent + 0.5); /* 四舍五入到整数显示 */
             if (pct > 100u) pct = 100u;
-            snprintf(view->usage_text, sizeof(view->usage_text), "%s %u%%", line, pct);
+            snprintf(view->usage_text, sizeof(view->usage_text), "%.60s %u%%",
+                     line, pct);
         }
         else {
-            snprintf(view->usage_text, sizeof(view->usage_text), "%s --", line);
+            snprintf(view->usage_text, sizeof(view->usage_text), "%.60s --", line);
         }
         if (state->usage.windows_total > 1) {
             char tail[16];
