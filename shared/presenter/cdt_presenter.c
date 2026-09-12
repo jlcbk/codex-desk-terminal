@@ -429,6 +429,18 @@ void cdt_present(const cdt_app_state_t *state,
     view->waiting_present = (!view->cancelled &&
                              th->state == CDT_THREAD_STATE_NEEDS_YOU);
 
+    /* ---- ZC6：NOW 两态精修（效果图 1/2）----
+     * alarm_mode：needs_you 专用警报布局（反白横幅 + PERMISSION REQUIRED +
+     * 命令边框盒 + 等待审批 + HOLD KEY=MUTE），此时 UI 隐藏计划面板/信息条/
+     * 活动行；cancelled（已裁决为 IDLE）与低压强制页不进警报布局。
+     * status_dot：非警报态状态词左侧实心圆点（有效任务且非警报布局）。
+     * elapsed_present：有任务 → RUNNING FOR 行可见（无任务/无快照为 "--"）。
+     * 无快照/无任务分支已在上方提前返回（memset 默认全 false）。 */
+    view->alarm_mode = (!view->low_battery_forced && !view->cancelled &&
+                        th->state == CDT_THREAD_STATE_NEEDS_YOU);
+    view->status_dot = (!view->low_battery_forced && !view->alarm_mode);
+    view->elapsed_present = true;
+
     /* ---- P2.2：AGENTS 行（全部可见线程按 §6 排序：needs_you > error >
      * working/thinking > done > idle；同级 updated_at 降序、id 升序。
      * 插入排序索引数组（n≤8），再按序填充行副本。---- */

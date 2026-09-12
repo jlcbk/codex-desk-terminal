@@ -195,17 +195,21 @@ static void test_voltage(void)
 
 static void test_status_words(void)
 {
+    /* ZC6：needs_you → 专用警报布局（alarm_mode），其余有效任务态 →
+     * 状态词左对齐实心圆点（status_dot） */
     struct {
         cdt_thread_state_t st;
         const char *label;
         int emph;
+        int dot;
+        int alarm;
     } cases[] = {
-        { CDT_THREAD_STATE_IDLE, "IDLE", 0 },
-        { CDT_THREAD_STATE_THINKING, "THINKING", 0 },
-        { CDT_THREAD_STATE_WORKING, "WORKING", 0 },
-        { CDT_THREAD_STATE_NEEDS_YOU, "NEEDS YOU", 1 },
-        { CDT_THREAD_STATE_DONE, "DONE", 0 },
-        { CDT_THREAD_STATE_ERROR, "ERROR", 1 },
+        { CDT_THREAD_STATE_IDLE, "IDLE", 0, 1, 0 },
+        { CDT_THREAD_STATE_THINKING, "THINKING", 0, 1, 0 },
+        { CDT_THREAD_STATE_WORKING, "WORKING", 0, 1, 0 },
+        { CDT_THREAD_STATE_NEEDS_YOU, "NEEDS YOU", 1, 0, 1 },
+        { CDT_THREAD_STATE_DONE, "DONE", 0, 1, 0 },
+        { CDT_THREAD_STATE_ERROR, "ERROR", 1, 1, 0 },
     };
     size_t i;
     for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -215,11 +219,14 @@ static void test_status_words(void)
         char name[64];
         s.threads[0].state = cases[i].st;
         cdt_present(&s, &r, 40000, &v);
-        snprintf(name, sizeof(name), "状态词 %s（emphasized=%d）",
-                 cases[i].label, cases[i].emph);
+        snprintf(name, sizeof(name), "状态词 %s（emphasized=%d dot=%d alarm=%d）",
+                 cases[i].label, cases[i].emph, cases[i].dot, cases[i].alarm);
         check(strcmp(v.status_label, cases[i].label) == 0 &&
                   v.status_emphasized == cases[i].emph &&
-                  v.status == cases[i].st,
+                  v.status == cases[i].st &&
+                  v.status_dot == cases[i].dot &&
+                  v.alarm_mode == cases[i].alarm &&
+                  v.elapsed_present,
               name, v.status_label);
     }
 }
@@ -235,6 +242,9 @@ static void test_cancelled(void)
     cdt_present(&s, &r, 40000, &v);
     check(v.status == CDT_THREAD_STATE_IDLE && strcmp(v.status_label, "IDLE") == 0 && v.cancelled,
           "cancelled → IDLE + 已取消标记", v.status_label);
+    /* ZC6：cancelled 不进警报布局（→ 常规态圆点 + RUNNING FOR 行） */
+    check(!v.alarm_mode && v.status_dot && v.elapsed_present,
+          "cancelled → 非警报布局（常规态：dot + running-for）", "");
 }
 
 static void test_no_tasks_and_no_state(void)
@@ -252,11 +262,16 @@ static void test_no_tasks_and_no_state(void)
     check(strcmp(v.project, "--") == 0 && strcmp(v.activity, "--") == 0 &&
               strcmp(v.elapsed_text, "--") == 0,
           "无任务 → 项目/活动/时长 \"--\"", v.project);
+    /* ZC6：无任务 → 无圆点、无警报布局、无 RUNNING FOR 行 */
+    check(!v.status_dot && !v.alarm_mode && !v.elapsed_present,
+          "无任务 → dot/alarm/running 全否", "");
 
     cdt_present(NULL, &r, 40000, &v);
     check(strcmp(v.status_label, "--") == 0 && strcmp(v.project, "--") == 0 &&
               strcmp(v.usage_text, "--") == 0 && strcmp(v.elapsed_text, "--") == 0,
           "无快照 → 状态/项目/额度/时长 \"--\"", v.status_label);
+    check(!v.status_dot && !v.alarm_mode && !v.elapsed_present,
+          "无快照 → dot/alarm/running 全否", "");
     check(strcmp(v.voltage_text, "3.90V") == 0,
           "无快照时电压仍来自 runtime（有效→显示）", v.voltage_text);
 
@@ -422,11 +437,16 @@ static void test_attention_and_mute(void)
     check(v.attention_present && v.pending_count == 2 &&
               strcmp(v.attention, "run command?") == 0,
           "attention 摘要透传", v.attention);
+    /* ZC6：needs_you + attention → 专用警报布局（命令盒数据即 attention） */
+    check(v.alarm_mode && !v.status_dot,
+          "needs_you+attention → 警报布局且无状态圆点", "");
 
     s.threads[0].attention_present = false;
     cdt_present(&s, &r, 30000, &v);
     check(!v.attention_present && v.pending_count == 0,
           "attention null → 隐藏，计数 0", "");
+    check(v.alarm_mode, "attention null 但 needs_you → 仍警报布局（盒隐藏由 UI 裁决）",
+          "");
 
     r.muted_attention_present = true;
     snprintf(r.muted_attention_id, sizeof(r.muted_attention_id), "thread-1");

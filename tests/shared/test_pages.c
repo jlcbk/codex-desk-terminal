@@ -454,25 +454,35 @@ static void test_now_waiting_semantics(void)
 
     add_thread(&s, t);
 
-    /* ZC5 语义修复：working 不再显示 WAITING（数据 waiting_text 仍填充） */
+    /* ZC5 语义修复：working 不再显示 WAITING（数据 waiting_text 仍填充）；
+     * ZC6：working → 常规态（dot + running-for），非警报布局 */
     cdt_present(&s, &r, 30000, &v);
     check(!v.waiting_present && strcmp(v.waiting_text, "00:00") == 0,
           "NOW WAITING：working → waiting_present=false（该位空白）", "");
+    check(!v.alarm_mode && v.status_dot && v.elapsed_present,
+          "NOW 两态：working → 常规态（dot/alarm 否/running 有）", "");
 
+    /* ZC6：needs_you → 专用警报布局 */
     s.threads[0].state = CDT_THREAD_STATE_NEEDS_YOU;
     cdt_present(&s, &r, 30000, &v);
     check(v.waiting_present, "NOW WAITING：needs_you → 显示", "");
+    check(v.alarm_mode && !v.status_dot,
+          "NOW 两态：needs_you → 警报布局（alarm 是/dot 否）", "");
 
     s.threads[0].end_reason = CDT_END_REASON_CANCELLED;
     cdt_present(&s, &r, 30000, &v);
     check(v.cancelled && !v.waiting_present,
           "NOW WAITING：cancelled 优先 → 不显示 WAITING（该位 CANCELLED）", "");
+    check(!v.alarm_mode,
+          "NOW 两态：cancelled → 退出警报布局（常规 IDLE 态）", "");
 
     /* 无任务 → 不显示 */
     s.thread_count = 0;
     s.threads_total = 0;
     cdt_present(&s, &r, 30000, &v);
     check(!v.waiting_present, "NOW WAITING：无任务 → 不显示", "");
+    check(!v.alarm_mode && !v.status_dot && !v.elapsed_present,
+          "NOW 两态：无任务 → 全否", "");
 }
 
 static void test_agents_row_elapsed(void)
@@ -521,6 +531,9 @@ static void test_now_plan_panel_data(void)
     /* 面板显隐数据：plan_present（total>0）→ 显示；计数 completed/total */
     check(v.plan_present && v.plan_completed == 3 && v.plan_total == 14,
           "NOW PLAN 面板：total>0 → 显示，计数 3 / 14", "");
+    /* ZC6：working 常规态才显示面板（alarm_mode=false 时 UI 不隐藏） */
+    check(!v.alarm_mode && v.status_dot,
+          "NOW PLAN 面板：常规态前提（非警报布局）", "");
     /* 面板行数据：前 4 步（≤4）text+status 可用（列截断已在 plan_steps 完成） */
     for (i = 0; i < 4; i++) {
         if (v.plan_steps[i].text[0] == '\0') break;

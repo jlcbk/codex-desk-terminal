@@ -132,6 +132,20 @@ typedef struct {
     char now_ctx_text[CDT_VIEW_NOW_CTX_BYTES];   /* "CTX 68%"/"CTX 578K"；空=隐藏 */
     char now_usage_text[CDT_VIEW_NOW_USAGE_BYTES]; /* "5H 72%"；空=隐藏 */
 
+    /* ---- ZC6：NOW 两态精修（效果图 1/2）----
+     * alarm_mode（needs_you 专用警报布局，覆盖常规内容）：UI 据此切换为
+     * 反白 NEEDS YOU 横幅 + "PERMISSION REQUIRED" 标签 + 命令独立边框盒
+     * （内容复用 attention 摘要，已脱敏）+ "WAITING FOR APPROVAL <waiting_text>"
+     * + "HOLD KEY = MUTE" 提示行，并隐藏 PLAN 面板/CTX 信息条/活动行；
+     * cancelled（→ IDLE）与低压强制页不进警报布局。
+     * status_dot：非警报态状态词左对齐实心圆点（unifont U+25CF；有效任务且
+     * 非警报布局才亮，无任务/无快照/低压页不亮）。
+     * elapsed_present：有任务 → true（UI 显示 "RUNNING FOR <elapsed_text>" 行；
+     * 无任务/无快照时长为 "--" → 行隐藏）。 */
+    bool alarm_mode;       /* needs_you 专用警报布局 */
+    bool status_dot;       /* 状态词左对齐前缀实心圆点 */
+    bool elapsed_present;  /* RUNNING FOR 行可见性（有任务） */
+
     /* ---- 电池（§7.1：UI 优先显示电压；百分比仅为估算）---- */
     char voltage_text[CDT_VIEW_VOLTAGE_BYTES]; /* "3.90V"；battery_valid=false → "--" */
     bool battery_valid;
