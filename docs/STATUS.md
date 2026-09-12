@@ -10,8 +10,8 @@
 |---|---|---|---|---|---|---|---|
 | Z1-Z6 前置核验 | A0（主会话） | done | P3.6 结论 | 1c8883f | 本机实测：rollout/metadata 逐字段解析、157 个 agent metadata status 枚举、OpenViking hook 脚本反推 stdin 字段、官方插件文档核对事件清单；dump hook 已装工作区（`.zcode/config.json`+`scripts/zcode_hook_dump.py`） | docs/P3.6_DESKTOP_OBSERVATION.md §7/§7.1、artifacts/zcode_hooks/dump.jsonl（下次新会话开始积累） | Z2 精确 stdin schema 待新会话 dump 采样（不阻塞开发：hook 只当触发器，真源=rollout）；ZCode 源为新增线，协议 source.kind 需扩 `zcode_observed`（zcode.py 任务处置） |
 | 契约 v1.1：source.kind 增补 zcode_observed | A0 | done | Z1-Z6 | 0f7bfbe | `sh scripts/build_shared.sh`（A0 复跑 38+145 PASS 含新锚点用例）、check_protocol 16/16、presenter 67、bridge pytest 101 | shared/state/codex_state.h、cdt_parser.c、bridge/state/engine.py、protocol/state.schema.json、docs/INTERFACES.md §3、tests/shared/test_main.c | 旧端 UNKNOWN_ENUM 拒包 fail-closed；bridge 发 zcode_observed 须配新固件（成对部署，§3 行已注明） |
-| ZC1 ZCode 观察器核心 | A1（子代理） | doing | 契约 v1.1+Z1-Z6 硬事实 | | | | 派发中 |
-| ZC2 服务接线+hook 安装器+传输 e2e | A2（子代理） | doing | 契约 v1.1+ZC1 接口定义 | | | | 派发中；不触碰用户级 ~/.zcode 配置（安装器只交付不运行） |
+| ZC1 ZCode 观察器核心 | A1（子代理） | done | 契约 v1.1+Z1-Z6 硬事实 | 8173b1b+d3b2637 | `uv run --python 3.12 --with pytest --with jsonschema --with websockets python -m pytest tests/bridge -q`（A0 复跑 189 passed 含修复后全量；ZC1 45 例+修复 3 例） | bridge/sources/zcode.py、tests/fixtures/zcode/（全合成）、tests/bridge/test_zcode_{mapper,observer}.py | ZC1-fix（A0 裁决）：子代理终态门闸——metadata 终态期间迟到 rollout 行零事件（防 working 卡死），resume 翻回运行态即解除；遗留=新 ZCode 会话真数据联调（部署段） |
+| ZC2 服务接线+hook 安装器+传输 e2e | A2（子代理） | done | 契约 v1.1+ZC1 接口契约 | 8d8570f | 同上套件（40 例：spool 15+install 19+serve e2e 6）；`python3 scripts/bridge_serve_zcode.py --dry-run`（A0 复跑真机 exit 0：三真源路径+TLS+token 识别正确）；e2e 7 帧逐字节一致+401 拒绝 | scripts/{zcode_hook_spool,install_zcode_hooks,bridge_serve_zcode}.py、tests/bridge/test_zcode_{hook_spool,install_zcode_hooks,serve}.py、artifacts/zcode_serve/ | A0 已运行 --install（2026-09-12，备份 config.json.bak-cdt-20260912T093705，与 OpenViking hooks 共存，幂等复验）；安装器 unload 备用 --uninstall；真机 TLS 兼容与 serve_codex 同口径 |
 
 ## P0：事实确认与契约冻结
 
