@@ -1,0 +1,14 @@
+{
+  "agentId": "agent_fixture01",
+  "childSessionId": "sess_subagent_agent_fixture01",
+  "createdAt": "2026-09-12T10:00:00.000Z",
+  "updatedAt": "2026-09-12T10:05:00.000Z",
+  "completedAt": "2026-09-12T10:05:00.000Z",
+  "cwd": "/tmp/zcode-fixture-project",
+  "description": "synthetic subagent fixture",
+  "prompt": "SYNTHETIC-PROMPT-MARKER do not ship real content",
+  "profileId": "default",
+  "parentSessionId": "sess_fixture_main",
+  "status": "completed",
+  "error": null
+}

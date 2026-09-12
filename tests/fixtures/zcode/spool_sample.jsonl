@@ -1,0 +1,11 @@
+{"event":"SessionStart","session_id":"sess_fixture_main","tool_name":null,"received_at":"2026-09-12T10:00:00.000Z"}
+{"event":"UserPromptSubmit","session_id":"sess_fixture_main","tool_name":null,"received_at":"2026-09-12T10:00:01.000Z"}
+{"event":"PreToolUse","session_id":"sess_fixture_main","tool_name":"read_file","received_at":"2026-09-12T10:00:02.000Z"}
+{"event":"PermissionRequest","session_id":"sess_fixture_main","tool_name":"bash","received_at":"2026-09-12T10:00:03.000Z"}
+{"event":"PostToolUse","session_id":"sess_fixture_main","tool_name":"bash","received_at":"2026-09-12T10:00:04.000Z"}
+{"event":"PostToolUseFailure","session_id":"sess_fixture_main","tool_name":"bash","received_at":"2026-09-12T10:00:05.000Z"}
+{"event":"Stop","session_id":"sess_fixture_main","tool_name":null,"received_at":"2026-09-12T10:00:06.000Z"}
+{"event":"Stop","session_id":"sess_fixture_other","tool_name":null,"received_at":"2026-09-12T10:00:07.000Z"}
+{"event":"Stop"
+{"event":"UnknownHookEvent","session_id":"sess_fixture_main","tool_name":null,"received_at":"2026-09-12T10:00:08.000Z"}
+{"event":"Stop","tool_name":null,"received_at":"2026-09-12T10:00:09.000Z"}

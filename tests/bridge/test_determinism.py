@@ -60,11 +60,18 @@ def test_no_wall_clock_or_random_in_pure_modules():
     （任务队列时间戳、归档命名、线程锁），与 mock 服务脚本同性质，不属于
     纯快照管线；其"快照盖章只加 epoch/seq、不改内容"的语义由
     tests/bridge/test_serve_codex.py 覆盖。
+
+    ZC1 补记（2026-09-12，A1）：bridge/sources/zcode.py 同为文件轮询 IO 模块
+    （rollout/metadata/hook spool 增量读；lookback 新鲜度需要 time.time，
+    [1308] 重置时刻按任务约定用 time.mktime 本地时区解析），按同一理由排除；
+    其确定性由 test_zcode_mapper.py（纯映射逐条断言）与
+    test_zcode_observer.py（固定单调钟序列 + 逐快照 schema/不变量）覆盖。
     """
     banned = ("import time", "import datetime", "import random", "import uuid",
               "time.time", "time.monotonic", "datetime.now", "datetime.utcnow",
               "random.", "uuid.", "os.environ", "getenv")
-    excluded = {"__main__.py", "codex.py", "codex_rpc.py", "serve_codex.py"}
+    excluded = {"__main__.py", "codex.py", "codex_rpc.py", "serve_codex.py",
+                "zcode.py"}
     targets = [pathlib.Path("/Users/cui/Documents/Projects/codex-desk-terminal/bridge")]
     files = [p for p in targets[0].rglob("*.py")
              if p.name not in excluded
