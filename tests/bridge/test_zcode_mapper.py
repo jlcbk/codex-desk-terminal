@@ -6,7 +6,8 @@ docs/P3.6_DESKTOP_OBSERVATION.md §7/§7.1 + ZC1 任务映射表。覆盖：
 - working：新行 → active；turnId 首次出现先 turn_started；usage → token
   （used=inputTokens+cacheReadTokens，capacity=None）；
 - Stop → turn_completed(last|"stop", completed) + idle；
-- needs_you：PermissionRequest → 合成负数审批（summary=工具名，绝无 tool_input）；
+- needs_you：PermissionRequest → 合成负数审批（summary 优先 spool 审批内容
+  摘要 [ZC3]，scrub ≤192 字节；无摘要回退工具名，绝无 tool_input 原文）；
   PreToolUse/PostToolUse/新 turn → server_request_resolved 撤销；
 - error → turn_completed(failed, 脱敏摘要)；[1308] → 5H 窗口（重置时刻按
   本地时区解析；解析失败 → resets_at_ms=None）；
@@ -27,6 +28,7 @@ import pytest
 
 from bridge import events as ev
 from bridge.sources import zcode as zc
+from conftest import FrozenZcodeWallClock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "zcode"
@@ -201,8 +203,195 @@ def test_session_start_mints_thread_started_once(mapper):
     events = mapper.spool_event(zc.SPOOL_SESSION_START, SID, None)
     assert [e.type for e in events] == [ev.EVENT_THREAD_STARTED]
     assert events[0].thread_id == SID
-    assert events[0].project == ""  # 主会话无 metadata.cwd 事实，诚实留空
+    assert events[0].project == ""  # 主会话无 cwd 事实（旧四字段行），诚实留空
     assert mapper.spool_event(zc.SPOOL_SESSION_START, SID, None) == []
+
+
+# ---------------------------------------------------------------------------
+# ZC3：SessionStart cwd → project（放行裁决 2026-09-12）
+# ---------------------------------------------------------------------------
+
+def test_session_start_with_cwd_sets_project_basename(mapper):
+    events = mapper.spool_event(zc.SPOOL_SESSION_START, SID, None,
+                                cwd="/Users/me/dev/my proj/")
+    assert [e.type for e in events] == [ev.EVENT_THREAD_STARTED]
+    assert events[0].project == "my proj"  # basename（尾斜杠容忍）+ 脱敏
+
+
+def test_session_start_cwd_long_basename_clamped_codepoint_safe(mapper):
+    """>96 字节的 basename 按 scrub_text 字节上限截断，且不劈开多字节字符。"""
+    long_name = "项" * 80  # 240 UTF-8 字节
+    events = mapper.spool_event(zc.SPOOL_SESSION_START, SID, None,
+                                cwd="/x/" + long_name)
+    project = events[0].project
+    assert len(project.encode("utf-8")) <= 96
+    project.encode("utf-8").decode("utf-8")  # 码点安全（可完整解码）
+
+
+def test_session_start_cwd_stored_per_session(mapper):
+    """cwd 记入 per-session 记账（供后续取用）；坏类型不覆盖。"""
+    mapper.spool_event(zc.SPOOL_SESSION_START, SID, None, cwd="/a/b")
+    assert mapper._state(SID).cwd == "/a/b"
+    mapper.spool_event(zc.SPOOL_SESSION_START, SID, None, cwd=123)  # 去重+坏类型
+    assert mapper._state(SID).cwd == "/a/b"
+
+
+@pytest.mark.parametrize("bad_cwd", [None, "", "   ", 42])
+def test_session_start_bad_cwd_project_empty(mapper, bad_cwd):
+    events = mapper.spool_event(zc.SPOOL_SESSION_START, SID, None, cwd=bad_cwd)
+    assert events[0].project == ""  # 无 cwd 事实不编造
+
+
+# ---------------------------------------------------------------------------
+# ZC3：TodoWrite plan → plan_updated（唯一放行 tool_input 的工具）
+# ---------------------------------------------------------------------------
+
+PLAN = {"total": 3, "steps": [
+    {"text": "step one", "status": "completed"},
+    {"text": "step two", "status": "in_progress"},
+    {"text": "step three", "status": "pending"},
+], "truncated": False}
+
+
+def test_todowrite_plan_maps_plan_updated_on_current_turn(mapper):
+    """提交（合成 turn）→ TodoWrite：plan_updated 挂在最近 turn 上；
+    PreToolUse 本体的 active 语义不变。"""
+    mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)  # prompt-1
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=PLAN)
+    assert [e.type for e in events] == [
+        ev.EVENT_THREAD_STATUS, ev.EVENT_PLAN_UPDATED]
+    assert events[0].status == ev.THREAD_STATUS_ACTIVE
+    pe = events[1]
+    assert pe.turn_id == "prompt-1"
+    assert pe.plan_steps == (("step one", "completed"),
+                             ("step two", "in_progress"),
+                             ("step three", "pending"))
+    assert pe.plan_total == 3
+
+
+def test_todowrite_plan_with_real_rollout_turn(mapper):
+    mapper.rollout_record(SID, model_io(turn_id="t9"))
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=PLAN)
+    assert events[-1].turn_id == "t9"
+
+
+def test_plan_steps_scrubbed_and_status_defensed(mapper):
+    """观察器侧再过一次 scrub（邮箱/凭证/home 路径）；status 防御性归一化；
+    坏 step（非 dict/空文本/坏类型）跳过。"""
+    plan = {"total": 5, "steps": [
+        {"text": "fix ops@example.com login", "status": "pending"},
+        {"text": "cache from /Users/cui/secrets dir", "status": "weird"},
+        {"text": 42, "status": "pending"},   # 坏类型：跳过
+        {"text": "   ", "status": "pending"},  # 空文本：跳过
+        "not-a-dict",                          # 坏 step：跳过
+    ]}
+    mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=plan)
+    pe = events[1]
+    assert pe.plan_steps == (("fix <redacted> login", "pending"),
+                             ("cache from ~/secrets dir", "pending"))
+    blob = json.dumps([e.to_dict() for e in events], ensure_ascii=False)
+    assert "ops@example.com" not in blob and "/Users/cui" not in blob
+
+
+def test_plan_bad_total_falls_back_to_none(mapper):
+    mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    for bad_total in ("x", None, True, -3, 2.5):
+        events = mapper.spool_event(
+            zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+            plan={"total": bad_total, "steps": PLAN["steps"]})
+        assert events[-1].plan_total is None  # 坏 total 不硬凑（reducer 回退）
+
+
+def test_plan_without_turn_dropped_and_counted(mapper):
+    """st.last_turn=None（未见过任何 turn）：plan 丢弃（reducer 会拒无 turn
+    事件），计数进 plan_dropped_no_turn；active 语义不受影响；有 turn 后恢复。"""
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=PLAN)
+    assert [e.type for e in events] == [ev.EVENT_THREAD_STATUS]
+    assert mapper.plan_dropped_no_turn == 1
+    mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=PLAN)
+    assert any(e.type == ev.EVENT_PLAN_UPDATED for e in events)
+    assert mapper.plan_dropped_no_turn == 1  # 不重复计数
+
+
+@pytest.mark.parametrize("bad_plan", [None, "x", 42, {}, {"steps": "nope"},
+                                      {"steps": []}, {"steps": [{"text": ""}]}])
+def test_plan_bad_shapes_ignored_without_counting(mapper, bad_plan):
+    mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None)
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=bad_plan)
+    assert all(e.type != ev.EVENT_PLAN_UPDATED for e in events)
+    assert mapper.plan_dropped_no_turn == 0  # 坏数据≠"有 plan 被丢"
+
+
+def test_plan_does_not_change_state_or_needs_you(mapper):
+    """plan 是内容事件：不改 working/needs_you 状态（reducer 语义；此处在
+    mapper+engine 全流上验证 TodoWrite 行为与其他 PreToolUse 完全一致）。"""
+    from bridge.state.engine import StateEngine, SOURCE_ZCODE_OBSERVED
+    eng = StateEngine("t-plan", source_kind=SOURCE_ZCODE_OBSERVED)
+    ticks = iter(range(1000, 1000000, 10))
+
+    def flow(events):
+        snap = None
+        for event in events:
+            snap = eng.apply(event, next(ticks))
+        return snap
+
+    # needs_you 期间：TodoWrite 的 plan_updated 不抢状态（等待优先）。
+    flow(mapper.spool_event(zc.SPOOL_SESSION_START, SID, None,
+                            cwd="/home/me/cdt"))
+    flow(mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None))
+    events = mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                plan=PLAN)
+    approval = mapper.spool_event(zc.SPOOL_PERMISSION_REQUEST, SID, "bash")[0]
+    snap = flow([approval])
+    assert snap["threads"][0]["state"] == "needs_you"
+    # 只应用 plan_updated（跳过 PreToolUse 的 resolved+active——真实流里它们
+    # 会撤销等待，这里隔离验证 plan 本身无状态副作用）。
+    snap = flow([events[-1]])
+    assert snap["threads"][0]["state"] == "needs_you"
+    assert snap["threads"][0]["plan"]["total"] == 3
+    assert snap["threads"][0]["plan"]["steps"][0]["text"] == "step one"
+    # 等待撤销后（真实 PreToolUse 流）→ working，PLAN 页仍在。
+    snap = flow(mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "bash"))
+    assert snap["threads"][0]["state"] == "working"
+    assert snap["threads"][0]["plan"]["total"] == 3
+
+
+def test_plan_full_flow_snapshot_project_and_page(mapper):
+    """真机目标场景端到端：主会话 project（旧版为空）+ PLAN 页有内容。"""
+    from bridge.state.engine import StateEngine, SOURCE_ZCODE_OBSERVED
+    eng = StateEngine("t-plan2", source_kind=SOURCE_ZCODE_OBSERVED)
+    ticks = iter(range(1000, 1000000, 10))
+
+    def flow(events):
+        snap = None
+        for event in events:
+            snap = eng.apply(event, next(ticks))
+        return snap
+
+    snap = flow(mapper.spool_event(zc.SPOOL_SESSION_START, SID, None,
+                                   cwd="/Users/me/dev/codex-desk-terminal"))
+    assert snap["threads"][0]["project"] == "codex-desk-terminal"
+    flow(mapper.spool_event(zc.SPOOL_USER_PROMPT_SUBMIT, SID, None))
+    big_plan = {"total": 12,
+                "steps": [{"text": "s%d" % i, "status": "pending"}
+                          for i in range(9)],   # >8：reducer/render 侧截断
+                "truncated": True}
+    snap = flow(mapper.spool_event(zc.SPOOL_PRE_TOOL_USE, SID, "TodoWrite",
+                                   plan=big_plan))
+    page = snap["threads"][0]["plan"]
+    assert page["total"] == 12
+    assert page["truncated"] is True  # render：steps 条数 > MAX_PLAN_STEPS(8)
+    assert len(page["steps"]) == 8
+    snap = flow(mapper.spool_event(zc.SPOOL_STOP, SID, None))
+    assert snap["threads"][0]["state"] == "done"  # 状态流不变
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +444,46 @@ def test_new_turn_resolves_pending_before_turn_started(mapper):
 
 
 # ---------------------------------------------------------------------------
+# ZC3：PermissionRequest 审批内容摘要 → needs_you（放行裁决 2026-09-12）
+# ---------------------------------------------------------------------------
+
+def test_permission_request_prefers_spool_summary_over_tool_name(mapper):
+    """对照效果图：NEEDS YOU 页显示真实审批内容（命令）而非裸工具名。"""
+    events = mapper.spool_event(zc.SPOOL_PERMISSION_REQUEST, SID, "Bash",
+                                summary="git push origin main")
+    assert [e.type for e in events] == [ev.EVENT_APPROVAL_REQUESTED]
+    assert events[0].request_id < 0
+    assert events[0].summary == "git push origin main"
+
+
+def test_permission_request_summary_scrubbed_and_clamped_codepoint_safe(mapper):
+    """>192 字节摘要按 scrub_text 字节上限截断，且经脱敏、码点安全。"""
+    events = mapper.spool_event(
+        zc.SPOOL_PERMISSION_REQUEST, SID, "Bash",
+        summary="git commit -m 'contact me me@example.com ' " + "汉" * 100)
+    summary = events[0].summary
+    assert len(summary.encode("utf-8")) <= 192
+    assert "me@example.com" not in summary  # scrub_text 清洗邮箱
+    summary.encode("utf-8").decode("utf-8")  # 码点安全（可完整解码）
+
+
+@pytest.mark.parametrize("bad_summary", [None, "", "   ", 42, ["git"]])
+def test_permission_request_missing_summary_falls_back_to_tool_name(
+        mapper, bad_summary):
+    """旧格式行/坏类型/空白摘要 → 回退工具名（现状行为零回归）。"""
+    events = mapper.spool_event(zc.SPOOL_PERMISSION_REQUEST, SID, "bash",
+                                summary=bad_summary)
+    assert events[0].summary == "bash"
+
+
+def test_permission_request_summary_whitespace_fallback_no_tool_name(mapper):
+    """无摘要且无工具名 → 占位文案（现状兜底）。"""
+    events = mapper.spool_event(zc.SPOOL_PERMISSION_REQUEST, SID, None,
+                                summary=None)
+    assert events[0].summary == "等待审批"
+
+
+# ---------------------------------------------------------------------------
 # error / [1308] 窗口
 # ---------------------------------------------------------------------------
 
@@ -277,14 +506,16 @@ def test_error_without_1308_mints_no_rate_window(mapper):
 
 
 def test_1308_record_mints_5h_window_with_local_reset_time(mapper):
-    message = "[1308][已达到 5 小时的使用上限。您的限额将在 2026-09-12 23:01:32 重置。]"
+    # 重置时刻动态取"未来 1 小时"（ZC3 时间炸弹修复：原用例硬编码
+    # "2026-09-12 23:01:32"，当天 23:01 后过期窗口抑制生效 → 永远假红）。
+    reset = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + 3600))
+    message = f"[1308][已达到 5 小时的使用上限。您的限额将在 {reset} 重置。]"
     events = mapper.rollout_record(SID, model_io(
         turn_id="t-1308", error={"name": "UsageLimitError", "message": message}))
     windows = [e for e in events if e.type == ev.EVENT_RATE_LIMITS]
     assert len(windows) == 1  # 只在真实命中 [1308] 时发，且只发一次
     window = windows[0].windows[0]
-    expected_ms = int(time.mktime(
-        time.strptime("2026-09-12 23:01:32", "%Y-%m-%d %H:%M:%S"))) * 1000
+    expected_ms = int(time.mktime(time.strptime(reset, "%Y-%m-%d %H:%M:%S"))) * 1000
     assert window == {"id": "zcode-5h", "label": "ZCODE 5H WINDOW",
                       "used_percent": 100, "duration_mins": 300,
                       "resets_at_ms": expected_ms}
@@ -420,7 +651,12 @@ def test_parse_reset_local_ms():
 # fixtures 本体：合成 rollout 样例逐条可映射，且内容标记绝不进入事件
 # ---------------------------------------------------------------------------
 
-def test_fixture_rollout_records_map_end_to_end(mapper):
+def test_fixture_rollout_records_map_end_to_end(mapper, monkeypatch):
+    # fixture 的 1308 重置时刻是固定历史字符串；冻结墙钟到重置前 1s，
+    # 使"过期窗口抑制"不随真实日期翻转（ZC3 时间炸弹修复，conftest 替身）。
+    frozen = time.mktime(time.strptime(
+        "2026-09-12 23:01:32", "%Y-%m-%d %H:%M:%S")) - 1
+    monkeypatch.setattr(zc, "time", FrozenZcodeWallClock(frozen))
     records = load_fixture_records()
     assert len(records) == 4
     seen_types = []

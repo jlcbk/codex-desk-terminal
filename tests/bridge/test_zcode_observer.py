@@ -28,7 +28,7 @@ import pytest
 
 from bridge.sources import zcode as zc
 from bridge.state.engine import SOURCE_ZCODE_OBSERVED, StateEngine
-from conftest import assert_invariants
+from conftest import FrozenZcodeWallClock, assert_invariants
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "zcode"
@@ -91,11 +91,19 @@ def model_io_line(turn="t1", input_tokens=1500, cache_read=450, error=None):
     return json.dumps(record, ensure_ascii=False)
 
 
-def spool_line(event, sid=SID, tool_name=None):
-    return json.dumps({"event": event, "session_id": sid,
-                       "tool_name": tool_name,
-                       "received_at": "2026-09-12T10:00:00.000Z"},
-                      ensure_ascii=False)
+def spool_line(event, sid=SID, tool_name=None, cwd=None, plan=None,
+               summary=None):
+    """合成 spool 行。cwd/plan/summary 缺省不写键=旧版冻结四字段行（零回归
+    基线）。"""
+    line = {"event": event, "session_id": sid, "tool_name": tool_name,
+            "received_at": "2026-09-12T10:00:00.000Z"}
+    if cwd is not None:
+        line["cwd"] = cwd
+    if plan is not None:
+        line["plan"] = plan
+    if summary is not None:
+        line["summary"] = summary
+    return json.dumps(line, ensure_ascii=False)
 
 
 def bump_mtime(path):
@@ -216,16 +224,18 @@ def test_error_flow_with_scrubbed_summary(validator, tmp_path):
 
 def test_1308_window_reaches_usage_snapshot(validator, tmp_path):
     root, engine, obs = make_world(tmp_path)
+    # 重置时刻动态取"未来 1 小时"（ZC3 时间炸弹修复：原硬编码
+    # "2026-09-12 23:01:32" 在当天 23:01 后触发过期窗口抑制 → 假红）。
+    reset = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() + 3600))
     append_line(rollout_path(root), model_io_line("t-1308", error={
         "name": "UsageLimitError",
-        "message": "[1308][已达到 5 小时的使用上限。您的限额将在 2026-09-12 23:01:32 重置。]"}))
+        "message": f"[1308][已达到 5 小时的使用上限。您的限额将在 {reset} 重置。]"}))
     snaps = obs.poll_once(1000)
     check_all(validator, snaps)
     usage = snaps[-1]["usage"]
     assert usage["available"] is True and usage["windows_total"] == 1
     window = usage["windows"][0]
-    expected_ms = int(time.mktime(
-        time.strptime("2026-09-12 23:01:32", "%Y-%m-%d %H:%M:%S"))) * 1000
+    expected_ms = int(time.mktime(time.strptime(reset, "%Y-%m-%d %H:%M:%S"))) * 1000
     assert window == {"id": "zcode-5h", "label": "ZCODE 5H WINDOW",
                       "used_percent": 100.0, "duration_mins": 300,
                       "resets_at_ms": expected_ms}
@@ -500,6 +510,140 @@ def test_spool_disabled_never_fabricates_done(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# ZC3：cwd→project / TodoWrite plan→PLAN 页 / 旧四字段行零回归
+# ---------------------------------------------------------------------------
+
+def test_spool_session_start_cwd_sets_project(validator, tmp_path):
+    """主会话 project（旧版恒空）= basename(cwd)（ZC3 放行 cwd）。"""
+    root, engine, obs = make_world(tmp_path)
+    assert obs.poll_once(1000) == []  # 首拍：武装 spool
+    append_line(root / "spool.jsonl",
+                spool_line("SessionStart", cwd="/Users/me/dev/my proj/"))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    assert thread_of(snaps[-1], SID)["project"] == "my proj"
+    assert obs.describe()["plan_dropped_no_turn"] == 0
+
+
+def test_spool_todowrite_plan_reaches_plan_page(validator, tmp_path):
+    """TodoWrite 的 plan 行 → PLAN 页有内容；状态流不变（working）。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)  # 武装
+    append_line(root / "spool.jsonl", spool_line("UserPromptSubmit"))
+    plan = {"total": 12, "truncated": True,
+            "steps": [{"text": "step %d" % i,
+                       "status": "in_progress" if i == 0 else "pending"}
+                      for i in range(9)]}
+    append_line(root / "spool.jsonl",
+                spool_line("PreToolUse", tool_name="TodoWrite", plan=plan))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    thread = thread_of(snaps[-1], SID)
+    assert thread["state"] == "working"          # plan 是内容事件，不改状态
+    assert thread["plan"]["total"] == 12
+    assert thread["plan"]["truncated"] is True   # render：steps > 8
+    assert len(thread["plan"]["steps"]) == 8
+    assert thread["plan"]["steps"][0] == {"text": "step 0", "status": "in_progress"}
+
+
+def test_spool_plan_text_scrubbed(validator, tmp_path):
+    """事件侧 scrub：邮箱/凭证/home 路径绝不原样进入快照。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)
+    append_line(root / "spool.jsonl", spool_line("UserPromptSubmit"))
+    plan = {"total": 1, "truncated": False, "steps": [
+        {"text": "notify ops@example.com then wipe /Users/cui/secrets",
+         "status": "pending"}]}
+    append_line(root / "spool.jsonl",
+                spool_line("PreToolUse", tool_name="TodoWrite", plan=plan))
+    snaps = obs.poll_once(2000)
+    blob = json.dumps(snaps, ensure_ascii=False)
+    assert thread_of(snaps[-1], SID)["plan"]["steps"][0]["text"] == \
+        "notify <redacted> then wipe ~/secrets"
+    assert "ops@example.com" not in blob and "/Users/cui" not in blob
+
+
+def test_spool_plan_without_turn_dropped_and_counted(validator, tmp_path):
+    """会话尚未见过任何 turn：plan 丢弃（mapper 先拦不产事件），计数进报告；
+    同行 active 心跳对 reducer 未知线程是无操作（线程不建立，无 PLAN 页）。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)
+    append_line(root / "spool.jsonl",
+                spool_line("PreToolUse", tool_name="TodoWrite",
+                           plan={"total": 2, "truncated": False, "steps": [
+                               {"text": "orphan", "status": "pending"}]}))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    assert thread_of(snaps[-1], SID) is None  # 无 turn 承载 → 线程从未建立
+    assert obs.describe()["plan_dropped_no_turn"] == 1
+
+
+def test_spool_old_four_field_line_still_maps(validator, tmp_path):
+    """旧版冻结四字段行（无 cwd/plan 键）零回归：project 留空、正常映射。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)
+    append_line(root / "spool.jsonl",
+                '{"event":"SessionStart","session_id":"%s","tool_name":null,'
+                '"received_at":"2026-09-12T10:00:00.000Z"}' % SID)
+    append_line(root / "spool.jsonl",
+                '{"event":"UserPromptSubmit","session_id":"%s","tool_name":null,'
+                '"received_at":"2026-09-12T10:00:01.000Z"}' % SID)
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    thread = thread_of(snaps[-1], SID)
+    assert thread["project"] == ""  # 无 cwd 事实 → 诚实留空（旧行为）
+    assert thread["state"] == "thinking"
+    assert obs.describe()["bad_lines"] == 0
+
+
+def test_spool_permission_request_summary_reaches_needs_you(validator, tmp_path):
+    """ZC3 端到端：spool 行带 summary → NEEDS YOU 页 attention.summary=命令
+    内容（对照效果图 `$ git push origin main`），而非裸工具名。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)                          # 首拍：武装 spool
+    append_line(rollout_path(root), model_io_line("t1", 1000, 200))
+    append_line(root / "spool.jsonl",
+                spool_line("PermissionRequest", tool_name="Bash",
+                           summary="git push origin main"))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    thread = thread_of(snaps[-1], SID)
+    assert thread["state"] == "needs_you"
+    assert thread["attention"] == {"pending_count": 1,
+                                   "summary": "git push origin main"}
+
+
+def test_spool_permission_request_without_summary_falls_back_to_tool_name(
+        validator, tmp_path):
+    """旧格式行（无 summary 键）端到端零回归：回退工具名。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)
+    append_line(rollout_path(root), model_io_line("t1", 1000, 200))
+    append_line(root / "spool.jsonl",
+                spool_line("PermissionRequest", tool_name="bash"))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    thread = thread_of(snaps[-1], SID)
+    assert thread["state"] == "needs_you"
+    assert thread["attention"] == {"pending_count": 1, "summary": "bash"}
+
+
+def test_spool_summary_bad_type_tolerated(validator, tmp_path):
+    """summary 坏类型按缺失处理：不崩溃、不计坏行、回退工具名。"""
+    root, engine, obs = make_world(tmp_path)
+    obs.poll_once(1000)
+    append_line(rollout_path(root), model_io_line("t1", 1000, 200))
+    append_line(root / "spool.jsonl",
+                spool_line("PermissionRequest", tool_name="bash")
+                .replace('"tool_name":"bash"',
+                         '"tool_name":"bash","summary":42'))
+    snaps = obs.poll_once(2000)
+    check_all(validator, snaps)
+    assert thread_of(snaps[-1], SID)["attention"]["summary"] == "bash"
+    assert obs.describe()["bad_lines"] == 0
+
+
+# ---------------------------------------------------------------------------
 # 观测元数据：stale 只进报告，绝不映射状态事件
 # ---------------------------------------------------------------------------
 
@@ -613,7 +757,12 @@ def test_lookback_excludes_stale_files(tmp_path):
 # 仓库 fixtures 冒烟：三份合成样例走通观察器 + 红线扫描
 # ---------------------------------------------------------------------------
 
-def test_repo_fixtures_smoke_with_redline_scan(validator, tmp_path):
+def test_repo_fixtures_smoke_with_redline_scan(validator, tmp_path, monkeypatch):
+    # fixture 的 1308 重置时刻是固定历史字符串；冻结 zcode.py 视角墙钟到
+    # 重置前 1s，抑制"过期窗口"对真实日期的翻转（ZC3 时间炸弹修复）。
+    frozen = time.mktime(time.strptime(
+        "2026-09-12 23:01:32", "%Y-%m-%d %H:%M:%S")) - 1
+    monkeypatch.setattr(zc, "time", FrozenZcodeWallClock(frozen))
     root, engine, obs = make_world(tmp_path)
     shutil.copy(FIXTURES / "rollout_sample.jsonl",
                 rollout_path(root, "sess_fixture_main"))

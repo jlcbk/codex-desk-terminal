@@ -56,3 +56,30 @@ def lifecycle_fixtures():
     from bridge.sources import mock
 
     return {name: mock.run(name) for name in mock.SCENARIO_NAMES}
+
+
+class FrozenZcodeWallClock:
+    """给 bridge.sources.zcode 冻结墙钟的测试替身（ZC3 引入）。
+
+    背景：fixture 的 1308 重置时刻是固定历史字符串（2026-09-12 23:01:32），
+    而观察器对"重置时刻已过"的限额窗口做墙钟抑制（ZC1-fix 裁决）——不冻结
+    墙钟的用例每天 23:01 后都会假红（时间炸弹）。monkeypatch.setattr(zc,
+    "time", FrozenZcodeWallClock(<epoch>)) 后，zcode.py 视角的 time.time()
+    返回冻结值，time.mktime 等其余实现走真模块（重置时刻解析不受影响）。
+    """
+
+    def __init__(self, frozen_epoch: float) -> None:
+        self._frozen = float(frozen_epoch)
+
+    def time(self) -> float:
+        return self._frozen
+
+    def mktime(self, t):
+        import time as _real
+
+        return _real.mktime(t)
+
+    def __getattr__(self, name):  # 其余 time.* 透传真模块
+        import time as _real
+
+        return getattr(_real, name)

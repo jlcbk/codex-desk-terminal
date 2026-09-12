@@ -13,9 +13,11 @@
 - 真源 2 metadata：``~/.zcode/cli/agents/sess_<主会话>/agent_<id>/metadata.json``；
   status 观测枚举 {completed, failed, stopped}，运行中=无 completedAt 字段。
 - 真源通道 3 hook spool（本模块只做读取端；写入端由 ZC2 安装器交付）：JSONL
-  追加文件，每行一条 ``{"event","session_id","tool_name","received_at"}``；
-  hook 事件名恰 7 种（SPOOL_EVENTS）。缺字段/多余字段/坏 JSON 的行跳过并计入
-  ``observer.bad_lines``，绝不崩溃。
+  追加文件，每行一条 ``{"event","session_id","tool_name","received_at"}``，
+  ZC3 起追加三个可选字段 ``"cwd"``（工作目录路径）、``"summary"``（仅
+  PermissionRequest 的审批内容摘要，放行裁决 2026-09-12）与 ``"plan"``（仅
+  TodoWrite 的 todos 任务清单，放行裁决 2026-09-12）；旧版四字段行仍然合法。
+  缺字段/多余字段/坏 JSON 的行跳过并计入 ``observer.bad_lines``，绝不崩溃。
 
 分层（对齐 bridge/sources/codex.py 的"纯映射器+适配器"）：
 
@@ -27,10 +29,16 @@
 
 映射规则（注释锚点 = P3.6 §7/§7.1）：
 
-- 会话→线程：thread_id 直接用 sessionId；project=basename(metadata.cwd)（仅
-  子代理有 metadata，主会话 project 留空）；主会话与子代理线程同池。
+- 会话→线程：thread_id 直接用 sessionId；子代理 project=basename(metadata.cwd)；
+  主会话 project 来自 spool SessionStart 行的 cwd（ZC3 放行：basename+脱敏，
+  旧行无 cwd → 留空）。主会话与子代理线程同池。
 - working：rollout 出现新行 → thread_status(active)；同一 turnId 首次出现先
   turn_started（reducer 的 turn_started 会清 plan/pending/终态门）。
+- plan：spool PreToolUse(TodoWrite) 行的 plan（ZC3 放行裁决=仅 TodoWrite 的
+  todos 任务清单，其他工具输入绝不进事件）→ plan_updated(turn_id=最近记账
+  turn，steps 文本再过 scrub_text(…,128) 清洗邮箱/凭证/home 路径)；无 turn
+  承载（st.last_turn=None）时丢弃并计数 plan_dropped_no_turn（报告元数据）。
+  plan 是内容事件，不改 working/needs_you 状态（reducer 语义）。
 - done/idle：spool Stop → turn_completed(最近 turnId|"stop", completed) +
   thread_status(idle)。文件活动停滞不产生任何终态事件（不伪造；"停滞→stale"
   只以 stale_session_ids 观测元数据形式暴露给服务层，§7.1 约束 2）。
@@ -241,13 +249,15 @@ def _agent_error_summary(error) -> str:
 class _SessionMapState:
     """per-session 映射记账（纯内存；仅 cap 清池时按会话整体清除）。"""
 
-    __slots__ = ("turns_seen", "last_turn", "started_emitted", "pending_approvals")
+    __slots__ = ("turns_seen", "last_turn", "started_emitted", "pending_approvals",
+                 "cwd")
 
     def __init__(self) -> None:
         self.turns_seen = set()              # 已发过 turn_started 的 turnId
         self.last_turn: Optional[str] = None  # 最近见过的 turnId（Stop 归结用）
         self.started_emitted = False          # SessionStart → thread_started 去重
         self.pending_approvals: List[int] = []  # 未撤销的合成 request_id（插入序）
+        self.cwd: Optional[str] = None        # 最近一次 spool 行的 cwd（ZC3，备用）
 
 
 class ZcodeEventMapper:
@@ -270,6 +280,8 @@ class ZcodeEventMapper:
         self.non_model_io = 0
         self.spool_seen = 0
         self.agents_seen = 0
+        # 有 plan 但无 turn 承载而被丢弃的行数（ZC3；报告元数据，不产事件）。
+        self.plan_dropped_no_turn = 0
 
     # ---- 记账 ---------------------------------------------------------------
     def _state(self, session_id: str) -> _SessionMapState:
@@ -357,26 +369,41 @@ class ZcodeEventMapper:
 
     # ---- 真源通道 3：hook spool（只当触发器，不信任载荷完整性，§7.1 约束 1）----
     def spool_event(self, event_name: str, session_id: str, tool_name,
-                    at_ms=None) -> list:
+                    at_ms=None, cwd=None, plan=None, summary=None) -> list:
         """hook 事件名 → 事件列表。
 
-        PermissionRequest → needs_you（summary=工具名，绝不放 tool_input）；
-        PreToolUse → 撤销合成等待 + active（工具执行=可观察工作）；PostToolUse →
-        撤销合成等待 + 合成 reasoning item（模型处理工具结果=THINKING，相位
-        映射裁决见分支注释）；Stop → turn 归结 + idle；SessionStart →
-        thread_started（去重，主会话无 cwd 事实 project 留空）；UserPromptSubmit
-        → 合成新 turn 起点 + reasoning item（THINKING；真机裁决 2026-09-12：
+        PermissionRequest → needs_you（summary 优先取 spool 的审批内容摘要
+        ——ZC3 放行裁决：写入端已限定 PermissionRequest 且只取 command/path/
+        url/query/file_path 首行，这里再 scrub_text(…,192) 清洗邮箱/凭证/home
+        路径上协议；spool 无摘要（旧格式行/字段缺失）回退工具名，绝不放
+        tool_input 原文）；PreToolUse → 撤销合成等待 + active（工具执行=
+        可观察工作）+ TodoWrite 的 plan_updated（ZC3 放行裁决：plan 仅来源
+        TodoWrite todos，其他工具输入绝不进事件）；PostToolUse → 撤销合成
+        等待 + 合成 reasoning item（模型处理工具结果=THINKING，相位映射裁决
+        见分支注释）；Stop → turn 归结 + idle；SessionStart → thread_started
+        （去重；project=basename(cwd) 脱敏——ZC3 放行 cwd，旧行/无 cwd → 留空。
+        边界：thread_started 只在线程首见时被 mapper 发出，reducer 也只在该
+        时刻采纳 project——bridge 重启/观察器武装晚于会话启动时，已运行会话
+        中途拿不到 project 属可接受边界，下个会话生效）；UserPromptSubmit →
+        合成新 turn 起点 + reasoning item（THINKING；真机裁决 2026-09-12：
         rollout 的 model_io 行要到调用完成才落盘，"提交后思考"阶段文件静默，
         不发起点则屏幕停在上一轮 done；真实 turnId 首见时经 st.last_turn 接管
         后续归结）；PostToolUseFailure 只作活动记账（无状态事件，工具失败≠
         整轮失败，error 由 rollout_record 合流）。未知事件名忽略并计数。
         """
         st = self._state(session_id)
+        if isinstance(cwd, str) and cwd.strip():
+            st.cwd = cwd  # per-session 记住工作目录（ZC3，供后续扩展取用）
         if event_name == SPOOL_SESSION_START:
             if st.started_emitted:
                 return []
             st.started_emitted = True
-            return [ev.thread_started(session_id, "", at_ms=at_ms)]
+            # project=basename(cwd)（对齐 agent_update 的子代理口径）+ 脱敏；
+            # 无 cwd 事实时诚实留空（不编造）。
+            project = ""
+            if isinstance(cwd, str) and cwd.strip():
+                project = scrub_text(os.path.basename(cwd.rstrip("/")) or cwd, 96)
+            return [ev.thread_started(session_id, project, at_ms=at_ms)]
         if event_name == SPOOL_USER_PROMPT_SUBMIT:
             # 合成 turn 起点用独立命名空间（"prompt-N"），与真实 turnId/占位
             # "stop" 必然不同 → reducer 视为新 turn，正确清除上一轮 DONE。
@@ -395,18 +422,25 @@ class ZcodeEventMapper:
             request_id = self._synthetic_next
             self._synthetic_next -= 1
             st.pending_approvals.append(request_id)
-            # 红线：只取 tool_name 字段；工具输入内容不进入 summary。
-            if isinstance(tool_name, str) and tool_name.strip():
-                summary = scrub_text(tool_name, 192)
+            # ZC3 放行：审批内容摘要优先（写入端只放行 command/path/url/
+            # query/file_path 的首行），scrub 后上协议；spool 无摘要（旧格式
+            # 行）回退工具名。tool_input 原文任何情况不进入 summary。
+            if isinstance(summary, str) and summary.strip():
+                text = scrub_text(summary, 192)
+            elif isinstance(tool_name, str) and tool_name.strip():
+                text = scrub_text(tool_name, 192)
             else:
-                summary = "等待审批"
-            return [ev.approval_requested(session_id, request_id, summary,
+                text = "等待审批"
+            return [ev.approval_requested(session_id, request_id, text,
                                           at_ms=at_ms)]
         if event_name == SPOOL_PRE_TOOL_USE:
             # 工具开始执行：可观察工作 → WORKING。
             events = self._resolve_pending(session_id, at_ms)
             events.append(ev.thread_status(session_id, ev.THREAD_STATUS_ACTIVE,
                                            at_ms=at_ms))
+            # TodoWrite 的任务清单（ZC3 放行）→ PLAN 页；写入端只在
+            # PreToolUse+TodoWrite 上携带 plan，其他事件恒 None。
+            events.extend(self._plan_events(session_id, st, plan, at_ms))
             return events
         if event_name == SPOOL_POST_TOOL_USE:
             # 工具结果已返回：模型进入下一轮处理 → THINKING（相位映射，
@@ -428,6 +462,47 @@ class ZcodeEventMapper:
                                            at_ms=at_ms))
             return events
         return []  # 未知事件名：忽略（前向兼容；观察器侧已计数）
+
+    def _plan_events(self, session_id: str, st: "_SessionMapState", plan,
+                     at_ms) -> list:
+        """spool plan 字典（TodoWrite todos，ZC3 放行）→ [plan_updated]。
+
+        - 写入端已做提取/归一化/截断，这里只做防御性解析：坏类型整体忽略，
+          坏 step 跳过，status 非 in_progress/completed 一律再归一化为 pending；
+        - steps 文本在观察器侧再过一次 scrub_text(…,128)（邮箱/凭证/home
+          路径清洗，bridge/redact.py）——spool 是本机文件，事件要上协议；
+        - plan 必须有 turn 承载：st.last_turn 为 None（会话还没见过任何
+          turn）时不发——reducer 的 turn 门闸会拒绝无 turn 事件，先拦避免
+          无谓事件，计数进 plan_dropped_no_turn（报告元数据）；
+        - plan 是内容事件：只改 PLAN 页，不改 working/needs_you 状态
+          （reducer 语义，INTERFACES "PLAN UPDATE 保持 WORKING"）。
+        """
+        if not isinstance(plan, dict):
+            return []
+        raw_steps = plan.get("steps")
+        if not isinstance(raw_steps, list):
+            return []
+        steps = []
+        for step in raw_steps:
+            if not isinstance(step, dict):
+                continue
+            text = step.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            status = step.get("status")
+            if status not in (ev.PLAN_IN_PROGRESS, ev.PLAN_COMPLETED):
+                status = ev.PLAN_PENDING
+            steps.append((scrub_text(text, 128), status))
+        if not steps:
+            return []
+        if st.last_turn is None:
+            self.plan_dropped_no_turn += 1
+            return []
+        total = plan.get("total")
+        if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+            total = None  # 坏 total 不硬凑：reducer 回退 len(steps)
+        return [ev.plan_updated(session_id, st.last_turn, steps, total=total,
+                                at_ms=at_ms)]
 
     # ---- 真源 2：子代理 metadata ---------------------------------------------
     def agent_update(self, child_session_id: str, meta, at_ms=None) -> list:
@@ -561,7 +636,7 @@ class ZcodeObserver:
         # 2) 先读完 spool/metadata 增量并注册其会话，再做池上限——保证
         #    "最近活动"池收纳的是最新会话而非发现顺序在前的会话。
         spool_entries = self._drain_spool()
-        for _name, session_id, _tool, _at in spool_entries:
+        for _name, session_id, _tool, _at, _cwd, _plan, _summary in spool_entries:
             self._note_activity(session_id, mono)   # hook 触发=真实活动
         agent_entries = self._scan_agents(time.time())
         for child_id, meta, _at in agent_entries:
@@ -623,13 +698,14 @@ class ZcodeObserver:
                     apply(events, session_id)
 
         # 5) spool 映射（文件固有行序=发生序）。
-        for name, session_id, tool_name, at_ms in spool_entries:
+        for name, session_id, tool_name, at_ms, cwd, plan, summary in spool_entries:
             if session_id not in self._sessions:
                 continue  # 已被池上限清退：不跟踪、不发事件
             self._note_activity(session_id, mono)  # hook 触发=活动
             if not self._event_allowed(session_id):
                 continue
-            events = self.mapper.spool_event(name, session_id, tool_name, at_ms)
+            events = self.mapper.spool_event(name, session_id, tool_name, at_ms,
+                                             cwd=cwd, plan=plan, summary=summary)
             if events:
                 apply(events, session_id)
 
@@ -685,6 +761,7 @@ class ZcodeObserver:
             "non_model_io": self.mapper.non_model_io,
             "spool_seen": self.mapper.spool_seen,
             "agents_seen": self.mapper.agents_seen,
+            "plan_dropped_no_turn": self.mapper.plan_dropped_no_turn,
         }
 
     def stale_session_ids(self, monotonic_ms: int) -> List[str]:
@@ -733,12 +810,17 @@ class ZcodeObserver:
         lines, consumed = self._split_lines(chunk)
         return offset + consumed, lines
 
-    def _drain_spool(self) -> List[Tuple[str, str, Optional[str], Optional[int]]]:
-        """hook spool 增量 → [(event, session_id, tool_name, at_ms)]。
+    def _drain_spool(self) -> List[Tuple[str, str, Optional[str], Optional[int],
+                                          Optional[str], Optional[dict],
+                                          Optional[str]]]:
+        """hook spool 增量 → [(event, session_id, tool_name, at_ms, cwd, plan,
+        summary)]。
 
         首次见到 spool 文件时从文件末尾起读（不回放历史）：spool 是触发通道，
         历史事件脱离当时 rollout 上下文会把旧 turn 重放成新状态。行格式按
-        ZC2 已冻结的 4 字段解析；多余字段容忍，坏行跳过并计数，绝不崩溃。
+        ZC2 冻结的四字段 + ZC3 可选的 cwd/plan/summary 解析（旧四字段行兼容：
+        缺失字段取 None）；多余字段容忍，坏行跳过并计数，绝不崩溃。cwd/plan/
+        summary 坏类型按缺失处理（None）。
         """
         if self.spool_path is None:
             return []
@@ -786,9 +868,19 @@ class ZcodeObserver:
             tool_name = obj.get("tool_name")
             if not isinstance(tool_name, str):
                 tool_name = None
+            cwd = obj.get("cwd")           # ZC3：可选，坏类型按缺失
+            if not isinstance(cwd, str):
+                cwd = None
+            plan = obj.get("plan")         # ZC3：可选，坏类型按缺失
+            if not isinstance(plan, dict):
+                plan = None
+            summary = obj.get("summary")   # ZC3：可选，坏类型按缺失
+            if not isinstance(summary, str):
+                summary = None
             self.mapper.spool_seen += 1
             entries.append((name, session_id, tool_name,
-                            iso_to_epoch_ms(obj.get("received_at"))))
+                            iso_to_epoch_ms(obj.get("received_at")),
+                            cwd, plan, summary))
         return entries
 
     def _scan_agents(self, now_wall: float):
