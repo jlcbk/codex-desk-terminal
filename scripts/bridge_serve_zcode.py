@@ -269,7 +269,9 @@ async def amain(args: argparse.Namespace) -> int:
     )
     server = WssServer(
         cfg, device_token=token,
-        snapshot_provider=_keepalive_provider(hub),
+        # 与 serve_codex 同口径：server 对 provider 调用后 await，必须传
+        # "调用 _keepalive_provider 的 lambda"，不能传协程对象本身。
+        snapshot_provider=lambda: _keepalive_provider(hub),
         on_link=lambda status, detail: LOGGER.info(
             "link %s detail=%s clients=%d", status, detail, server.client_count),
         on_message=lambda data, n: LOGGER.info("uplink telemetry bytes=%d", n),

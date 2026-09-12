@@ -41,7 +41,8 @@
   192))；message 匹配 "[1308]"（5 小时用量上限）→ 额外发 rate_limits
   （[{id:"zcode-5h", label:"ZCODE 5H WINDOW", used_percent:100,
   duration_mins:300, resets_at_ms:<中文重置时间按本地时区 time.mktime 解析>}]）；
-  解析失败 resets_at_ms=None，绝不编造。此窗口只在真实命中限额时发。
+  解析失败 resets_at_ms=None，绝不编造。此窗口只在真实命中限额时发；重置时刻
+  已过（墙钟判定）则不再发（限额是历史事实，不是当前占用）。
 - token：response.usage → token_usage(used=inputTokens+cacheReadTokens,
   capacity=None)。语义=当前 context 占用近似（最近一次调用的输入+缓存读部分），
   非累计消耗；ZCode 无 context 窗口事实，capacity 诚实给 None（注释见
@@ -341,10 +342,14 @@ class ZcodeEventMapper:
                 session_id,
                 turn_id if turn_id is not None else ERROR_TURN_PLACEHOLDER,
                 ev.TURN_STATUS_FAILED, summary=summary, at_ms=at_ms))
-            # 5 小时用量上限：仅 message 真实含 [1308] 时发窗口。
+            # 5 小时用量上限：仅 message 真实含 [1308] 时发窗口；重置时刻已过
+            # （墙钟判定）→ 限额已是历史，不再呈现 100% 占用（不伪造当前窗口）。
+            # 解析失败（resets=None）仍发：命中属实，只是重置时刻未知。
             if USAGE_LIMIT_5H_RE.search(error["message"]):
-                events.append(ev.rate_limits(
-                    [usage_limit_window_5h(error["message"])], at_ms=at_ms))
+                window = usage_limit_window_5h(error["message"])
+                resets = window["resets_at_ms"]
+                if resets is None or resets > int(time.time() * 1000):
+                    events.append(ev.rate_limits([window], at_ms=at_ms))
         return events
 
     # ---- 真源通道 3：hook spool（只当触发器，不信任载荷完整性，§7.1 约束 1）----

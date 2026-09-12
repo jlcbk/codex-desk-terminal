@@ -246,6 +246,20 @@ def test_1308_without_parseable_reset_time_yields_none(mapper):
     assert window["resets_at_ms"] is None  # 解析失败 → None，绝不编造
 
 
+def test_1308_expired_reset_time_suppresses_window(mapper):
+    """A0 裁决（真机首跑发现）：重置时刻已过的 1308 是历史事实，不是当前
+    占用——冷启动回放尾巴里的旧限额错误不得让 USAGE 页永远显示 100%。"""
+    past = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))
+    events = mapper.rollout_record(SID, model_io(
+        turn_id="t-1308-old",
+        error={"name": "UsageLimitError",
+               "message": f"[1308][已达到 5 小时的使用上限。您的限额将在 {past} 重置。]"}))
+    assert all(e.type != ev.EVENT_RATE_LIMITS for e in events)
+    # failed turn 本体仍如实归结（历史错误不失真）
+    completed = [e for e in events if e.type == ev.EVENT_TURN_COMPLETED][0]
+    assert completed.status == ev.TURN_STATUS_FAILED
+
+
 # ---------------------------------------------------------------------------
 # 子代理 metadata
 # ---------------------------------------------------------------------------
