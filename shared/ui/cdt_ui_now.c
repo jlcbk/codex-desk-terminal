@@ -250,6 +250,7 @@ void cdt_ui_now_apply(const cdt_view_t *view)
     char buf[CDT_VIEW_USAGE_BYTES + 24];
     bool compact;   /* A0：状态区两档——done/idle/error 紧凑条，working/thinking 大字 */
     int rows_visible;
+    int i;
 
     if (view == NULL) return;
 
@@ -293,24 +294,29 @@ void cdt_ui_now_apply(const cdt_view_t *view)
         else lv_obj_add_flag(w.status_dot, LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* ---- A0（2026-09-14 用户反馈）：状态区两档高度 ----
+    /* ---- A0（2026-09-14 用户反馈 v2）：状态区两档高度 ----
      * working/thinking：44px 大字主视觉（效果图 1，一眼看到在干活）；
-     * done/idle/error：26px 紧凑状态条（状态词换 16px 字体），省出的空间
-     * 让计划面板多显示一行（4→5 步）并整体上移。警报态恒 44px 横幅。 */
+     * done/idle/error：34px——**保持原大字（F_STATUS）**，只删掉字身上下
+     * 的空行（44→34），后续内容上移、计划面板 4→5 行。警报态恒 44px。 */
     if (compact) {
-        lv_obj_set_size(w.status_box, 384, 26);
-        lv_obj_set_style_text_font(w.status_label, F_TITLE, LV_PART_MAIN);
-        lv_obj_set_pos(w.status_label, 8, 4);
-        lv_obj_set_y(w.status_dot, 5);
-        lv_obj_set_y(w.activity, 88);
-        lv_obj_set_y(w.running, 108);
-        lv_obj_set_y(w.wait, 108);
-        lv_obj_set_size(w.plan_panel, 384, 112);
-        lv_obj_set_y(w.plan_panel, 130);
+        lv_obj_set_size(w.status_box, 384, 34);
+        lv_obj_set_size(w.status_label, 368, 28);
+        lv_obj_set_pos(w.status_label, 8, 3);
+        lv_obj_set_y(w.status_dot, 9);
+        lv_obj_set_y(w.activity, 96);
+        lv_obj_set_y(w.running, 116);
+        lv_obj_set_y(w.wait, 116);
+        lv_obj_set_size(w.plan_panel, 384, 106);
+        lv_obj_set_y(w.plan_panel, 136);
+        /* 紧凑档步骤行距 17→16px：5 行放进 106px 面板 */
+        for (i = 0; i < NOW_PLAN_ROWS; i++) {
+            lv_obj_set_y(w.plan_mark[i], 22 + i * 16);
+            lv_obj_set_y(w.plan_text[i], 22 + i * 16);
+        }
     }
     else {
         lv_obj_set_size(w.status_box, 384, 44);
-        lv_obj_set_style_text_font(w.status_label, F_STATUS, LV_PART_MAIN);
+        lv_obj_set_size(w.status_label, 368, 32);
         lv_obj_set_pos(w.status_label, 8, 6);
         lv_obj_set_y(w.status_dot, 14);
         lv_obj_set_y(w.activity, 106);
@@ -318,6 +324,10 @@ void cdt_ui_now_apply(const cdt_view_t *view)
         lv_obj_set_y(w.wait, 126);
         lv_obj_set_size(w.plan_panel, 384, 92);
         lv_obj_set_y(w.plan_panel, 148);
+        for (i = 0; i < NOW_PLAN_ROWS; i++) {
+            lv_obj_set_y(w.plan_mark[i], 22 + i * 17);
+            lv_obj_set_y(w.plan_text[i], 22 + i * 17);
+        }
     }
 
     /* ---- 常规态内容行（警报态整体隐藏，位置让给警报元素）---- */
