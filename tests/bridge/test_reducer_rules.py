@@ -409,3 +409,26 @@ def test_thread_system_error_maps_error_not_done():
     rec = s["threads"][0]
     assert rec["state"] == "error"
     assert rec["end_reason"] is None  # thread 级错误：非 turn 终态，end_reason 保持 null
+
+
+# ---- A0（2026-09-13 真机缺陷）：IDLE 关闭开放回合，时长定格 ----
+
+def test_idle_closes_open_turn_and_freezes_elapsed():
+    """乱序 Stop 的兜底 IDLE 落在开放回合上：回合关闭、时长定格，
+    不再出现「idle + RUNNING FOR 永久递增」。"""
+    t = "t1"
+    engine = StateEngine("e")
+    engine.apply(ev.thread_started(t, "p", at_ms=0), 0)
+    engine.apply(ev.turn_started(t, "turn-1", at_ms=1000), 1000)
+    engine.apply(ev.thread_status(t, ev.THREAD_STATUS_ACTIVE, at_ms=2000), 2000)
+    before = engine.apply(ev.thread_status(t, ev.THREAD_STATUS_IDLE, at_ms=5000), 5000)
+    thread = [x for x in before["threads"] if x["id"] == t][0]
+    assert thread["state"] == "idle"
+    frozen = thread["elapsed_ms"]
+    assert frozen == 4000  # 1000ms 回合开始 → 5000ms 关闭定格
+
+    # 时钟继续推进（仅 keepalive 快照、无新事件）：elapsed 不再增长
+    after = engine.apply(ev.thread_status(t, ev.THREAD_STATUS_ACTIVE, at_ms=60000), 60000)
+    thread = [x for x in after["threads"] if x["id"] == t][0]
+    # ACTIVE 会把状态拉回 working，但回合已关闭 → elapsed 仍为定格值
+    assert thread["elapsed_ms"] == frozen

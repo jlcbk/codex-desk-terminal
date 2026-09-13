@@ -474,6 +474,10 @@ void cdt_present(const cdt_app_state_t *state,
                         th->state == CDT_THREAD_STATE_NEEDS_YOU);
     view->status_dot = (!view->low_battery_forced && !view->alarm_mode);
     view->elapsed_present = true;
+    /* A0（2026-09-13 真机缺陷）：时长标签按状态区分——只有进行中的工作才
+     * "RUNNING FOR"；done/error/idle/cancelled 时长已定格 → "LAST RUN"。 */
+    view->elapsed_running = (th->state == CDT_THREAD_STATE_WORKING ||
+                             th->state == CDT_THREAD_STATE_THINKING);
 
     /* ---- P2.2：AGENTS 行（全部可见线程按 §6 排序：needs_you > error >
      * working/thinking > done > idle；同级 updated_at 降序、id 升序。
@@ -556,8 +560,10 @@ void cdt_present(const cdt_app_state_t *state,
 
     /* ---- 时长：base + fresh 增量（陈旧冻结）----
      * 终态（done/error/cancelled，end_reason 非空）任务时长定格在快照基值：
-     * 终态后时长不再推进（SCENARIOS S06；任务已结束，无新可计时长）。*/
-    if (th->end_reason != CDT_END_REASON_NULL) {
+     * 终态后时长不再推进（SCENARIOS S06；任务已结束，无新可计时长）。
+     * A0（2026-09-13 真机缺陷）：idle 关闭的回合（end_reason 为空）同样定格——
+     * 否则「idle + RUNNING FOR 永久递增」（乱序 Stop 兜底 IDLE 落在开放回合）。*/
+    if (th->end_reason != CDT_END_REASON_NULL || th->state == CDT_THREAD_STATE_IDLE) {
         delta_ms = 0;
     }
     fmt_duration(view->elapsed_text, sizeof(view->elapsed_text),

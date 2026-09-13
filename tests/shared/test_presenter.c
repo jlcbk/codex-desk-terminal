@@ -228,6 +228,16 @@ static void test_status_words(void)
                   v.alarm_mode == cases[i].alarm &&
                   v.elapsed_present,
               name, v.status_label);
+        /* A0：时长行标签按状态——working/thinking="RUNNING FOR"（进行中），
+         * 其余（done/error/idle/cancelled）定格 → "LAST RUN"。 */
+        {
+            int want_running = (cases[i].st == CDT_THREAD_STATE_WORKING ||
+                                cases[i].st == CDT_THREAD_STATE_THINKING);
+            snprintf(name, sizeof(name), "时长标签 %s（running=%d）",
+                     cases[i].label, want_running);
+            check(v.elapsed_running == want_running, name,
+                  v.elapsed_running ? "RUNNING" : "LAST");
+        }
     }
 }
 

@@ -167,8 +167,11 @@ typedef struct {
      * cancelled（→ IDLE）与低压强制页不进警报布局。
      * status_dot：非警报态状态词左对齐实心圆点（unifont U+25CF；有效任务且
      * 非警报布局才亮，无任务/无快照/低压页不亮）。
-     * elapsed_present：有任务 → true（UI 显示 "RUNNING FOR <elapsed_text>" 行；
-     * 无任务/无快照时长为 "--" → 行隐藏）。 */
+     * elapsed_present：有任务 → true（UI 显示时长行；无任务/无快照时长为
+     * "--" → 行隐藏）。
+     * elapsed_running：working/thinking=true → UI 标签 "RUNNING FOR"；
+     * 其余状态（done/error/idle/cancelled）时长已定格 → 标签 "LAST RUN"。 */
+    bool elapsed_running;
     bool alarm_mode;       /* needs_you 专用警报布局 */
     bool status_dot;       /* 状态词左对齐前缀实心圆点 */
     bool elapsed_present;  /* RUNNING FOR 行可见性（有任务） */

@@ -295,9 +295,13 @@ void cdt_ui_now_apply(const cdt_view_t *view)
         lv_obj_remove_flag(w.activity, LV_OBJ_FLAG_HIDDEN);
 
         /* ZC6：时长紧跟活动（效果图 1 "Running for 02:41"），原底部 ELAPSED
-         * 槽位取消；无任务/无快照（"--"）整行隐藏。 */
+         * 槽位取消；无任务/无快照（"--"）整行隐藏。
+         * A0：标签按状态区分——working/thinking="RUNNING FOR"（进行中），
+         * 其余（done/idle/error）时长已定格 → "LAST RUN"（上一轮时长）。 */
         if (view->elapsed_present) {
-            snprintf(buf, sizeof(buf), "RUNNING FOR %s", view->elapsed_text);
+            snprintf(buf, sizeof(buf), "%s %s",
+                     view->elapsed_running ? "RUNNING FOR" : "LAST RUN",
+                     view->elapsed_text);
             set_text_ascii(w.running, buf);
             lv_obj_remove_flag(w.running, LV_OBJ_FLAG_HIDDEN);
         }

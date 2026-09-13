@@ -121,8 +121,15 @@ def _effective_state(rec: ThreadRecord) -> str:
 
 
 def _turn_gate(rec: ThreadRecord, event) -> bool:
-    """迟到事件门闸：turn 已终态、或事件属于旧 turn 时返回 True（应丢弃）。"""
+    """迟到事件门闸：turn 已终态、或事件属于旧 turn 时返回 True（应丢弃）。
+
+    A0 裁决（2026-09-13 真机缺陷）：软关闭（idle 兜底关闭、end_reason=None）
+    是例外——真实终态 turn_completed 允许覆写（如子代理元数据 completed→failed
+    翻转、错误落定）；带真实 end_reason 的硬关闭仍拒绝一切迟到事件（防复活）。
+    """
     if rec.turn_finished:
+        if event.type == ev.EVENT_TURN_COMPLETED and rec.end_reason is None:
+            return False
         return True
     if rec.turn_id is not None and event.turn_id is not None and event.turn_id != rec.turn_id:
         return True
@@ -224,9 +231,14 @@ def reduce(state: dict, event, now_mono: int) -> dict:
 
     elif t == ev.EVENT_TURN_COMPLETED:
         rec = _record(state, event.thread_id)
-        if rec is not None and not rec.turn_finished:
-            if not (rec.turn_id is not None and event.turn_id is not None
-                    and event.turn_id != rec.turn_id):
+        if rec is not None:
+            # A0（2026-09-13）：硬关闭（已有真实 end_reason）拒绝迟到终态（防复活）；
+            # 开放回合与软关闭（idle 兜底，end_reason=None）允许终态落定/覆写
+            # （软关闭 + 异 id 亦放行：错误要落到线程上，不因乱序丢失）。
+            hard_closed = rec.turn_finished and rec.end_reason is not None
+            stale_id = (rec.turn_id is not None and event.turn_id is not None
+                        and event.turn_id != rec.turn_id)
+            if not hard_closed and not (rec.turn_finished and stale_id):
                 status = event.status
                 if status == ev.TURN_STATUS_COMPLETED:
                     rec.state = ST_DONE
@@ -266,6 +278,13 @@ def reduce(state: dict, event, now_mono: int) -> dict:
                 if not rec.pending:  # pending 未解除前不能被 idle 抢掉 NEEDS YOU
                     rec.state = ST_IDLE
                     rec.updated_mono = now_mono
+                    # A0 裁决（2026-09-13 真机缺陷）：IDLE=无进行中工作——落在
+                    # 开放回合上时关闭回合并定格时长。否则乱序 Stop 的兜底 IDLE
+                    # 会造成「idle + RUNNING FOR 永久递增」并存。end_reason 留
+                    # None（非 completed/failed/cancelled，仅显示定格）。
+                    if not rec.turn_finished:
+                        rec.turn_finished = True
+                        rec.finished_mono = now_mono
             elif status == ev.THREAD_STATUS_SYSTEM_ERROR:
                 rec.state = ST_ERROR
                 rec.updated_mono = now_mono
