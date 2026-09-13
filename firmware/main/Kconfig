@@ -26,4 +26,28 @@ menu "CodexDT dev net (P5.2)"
             顶栏时钟 = 快照 generated_at_ms（UTC）+ 该偏移，仅显示换算，
             不参与任何状态判断（协议时间语义不变）。模拟器固定 0（确定性）。
 
+    # ------------------------------------------------------------------
+    # ZC11（A11，2026-09-13）追加块：产品主流程传输选择。与 ZC9/ZC10 的
+    # Kconfig 追加块错开区域，本块独立成段；契约真源 protocol/transport.md。
+    # ------------------------------------------------------------------
+    config CDT_TRANSPORT_SEL
+        int "传输方式选择（0=WiFi/WSS 1=BLE peripheral）"
+        range 0 1
+        default 0
+        help
+            产品主流程同一固件二选一编译进运行路径（Kconfig 编译期选定，
+            运行期不再切换；transport.md §1「同一时刻只有一个活动 transport」）。
+            0=WiFi/WSS（默认，现网行为零变化）：dev_net 起 WiFi STA，
+            cdt_wss_client 连 Bridge /v1/state（TLS+CA 验链+SPKI pin+token，
+            凭据经 dev_net_config.h）；BLE 组件照常编译入 archive 但不启动、
+            不链接其运行路径。
+            1=BLE peripheral：不启动 WiFi/WSS；cdt_ble_peripheral 以冻结
+            UUID（transport.md §2.1）广播（设备名 CodexDT 在 scan response），
+            RX 分片写入→重组器→CRC32→经与 WSS 同一 app_inbox 管线下游
+            （互斥/优先提醒槽语义不变）；ACK/NACK 由组件按上层三值结果经
+            TX Notify 回发（§3.4）。无 WiFi 凭据亦可构建（CDT_DEVNET_OFFLINE
+            组合同样可用）。配对为 LE Secure Connections+数字比较+绑定
+            （§2.3）；KEY 长按确认接线与配对/MTU/吞吐为 P3.4 B 系列真机项，
+            未实测项不标已验证。
+
 endmenu

@@ -12,6 +12,7 @@ idf_component_register(
          "app_inbox.c"
          "dev_net.c"
          "lvgl_port.c"
+         "transport_sel.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/state/cdt_json.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/state/cdt_parser.c"
          "${CMAKE_CURRENT_LIST_DIR}/../../shared/state/cdt_store.c"

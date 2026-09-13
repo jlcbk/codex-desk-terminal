@@ -84,6 +84,7 @@
 #include "dev_net.h"
 #include "lvgl_port.h"
 #include "st7305.h"
+#include "transport_sel.h" /* ZC11：传输选择（Kconfig 编译期 WiFi/WSS 或 BLE） */
 
 /* CRC32：shared/transport/cdt_frame.h:91 冻结签名（cdt_crc32）。该头与
  * shared/display/cdt_frame.h 同名同 guard（CDT_FRAME_H）无法同 TU 包含，
@@ -217,7 +218,10 @@ static cdt_link_state_t compute_link_state(int64_t now)
     if (!s_have_rx) {
         return CDT_LINK_DISCONNECTED; /* 尚无任何合法快照：如实显示断开 */
     }
-    if (s_wss_state != CDT_WSS_LINK_CONNECTED) {
+    /* ZC11：链路状态按编译期选定的传输判定——BLE 看 GAP 连接镜像，
+     * WIFI 看 WSS 状态机（原逻辑零变化）。 */
+    if (cdt_transport_sel_is_ble() ? !cdt_transport_sel_ble_link_up()
+                                   : (s_wss_state != CDT_WSS_LINK_CONNECTED)) {
         return CDT_LINK_DISCONNECTED; /* transport 层已断（退避/配置错误） */
     }
     uint32_t since = (uint32_t)(now - (int64_t)s_last_rx_ms);
@@ -251,7 +255,8 @@ static void runtime_update(int64_t now)
     s_runtime.charging = CDT_PRESENCE_UNKNOWN;      /* 本板无充电检测（HARDWARE §1.3） */
     s_runtime.external_power = CDT_PRESENCE_UNKNOWN; /* 不根据高电压猜充电 */
     s_runtime.power_state = s_fsm.state;
-    snprintf(s_runtime.transport, sizeof s_runtime.transport, "wifi");
+    snprintf(s_runtime.transport, sizeof s_runtime.transport, "%s",
+             cdt_transport_sel_name()); /* "wifi"/"ble"（§1a 枚举，编译期选定） */
     s_runtime.link_state = compute_link_state(now);
     s_runtime.last_rx_monotonic_ms = s_last_rx_ms;
     s_runtime.selected_page = s_nav.page;
@@ -391,6 +396,7 @@ static void handle_inbox(int64_t now, bool *need_render)
 static void cb_stop_radio(void *user)
 {
     (void)user;
+    cdt_transport_sel_radio_stop(); /* ZC11：BLE 模式停外设；WIFI 模式 no-op（下行照旧） */
     esp_err_t r1 = cdt_wss_stop();
     esp_err_t r2 = dev_net_stop();
     ESP_LOGW(TAG, "[lowbat] radio stop: wss=%s net=%s", esp_err_to_name(r1),
@@ -718,10 +724,15 @@ static void app_task(void *arg)
     /* --- BOOT_CHECK：先 ADC 后无线（§7.3）--- */
     bool radio_ok = boot_check();
     render(now_ms(), "boot-check");
+    /* ZC11：传输选择（Kconfig 编译期）。BLE 模式不起 WiFi/WSS，直接以冻结
+     * UUID 广播（无凭据依赖，离线演示组合同样可用）；WIFI 模式走原路径。 */
+    if (radio_ok && cdt_transport_sel_is_ble()) {
+        cdt_transport_sel_ble_start();
+    }
 #if CDT_HAS_NET_CONFIG
-    if (radio_ok) {
+    if (radio_ok && !cdt_transport_sel_is_ble()) {
         start_radio();
-    } else {
+    } else if (!radio_ok) {
         ESP_LOGE(TAG, "BOOT_CHECK 受限：无线未启动（链接 DISCONNECTED 页，电压可看）");
     }
 #else
@@ -811,7 +822,13 @@ static void app_task(void *arg)
             if (app_power_runtime_radio_allow(acts, s_radio_started) &&
                 !s_sleep_latched) {
                 ESP_LOGW(TAG, "[power] 运行期 ALLOW_RADIO_START → 启动无线");
-                start_radio();
+                /* ZC11：BLE 模式起外设广播（无凭据/退避在 NimBLE 栈内）；
+                 * WIFI 模式照旧 start_radio。 */
+                if (cdt_transport_sel_is_ble()) {
+                    cdt_transport_sel_ble_start();
+                } else {
+                    start_radio();
+                }
                 need_render = true;
             } else if (acts & CDT_POWER_ACT_BLOCK_RADIO_START) {
                 ESP_LOGE(TAG, "[power] 运行期 BLOCK_RADIO_START（无线保持关闭）");
@@ -822,11 +839,16 @@ static void app_task(void *arg)
             }
         }
 
-        /* WiFi 重连退避轮询（§5.4 序列；WSS 退避在组件内部任务） */
+        /* WiFi 重连退避轮询（§5.4 序列；WSS 退避在组件内部任务）。
+         * dev_net_poll 对未启动 STA 是 no-op（s_started 门卫），BLE 模式安全。 */
         if (now - last_wifi_poll >= 200) {
             last_wifi_poll = now;
             dev_net_poll(now);
         }
+
+        /* ZC11：BLE 模式重组器超时巡检（3s 进展/30s 整包，NACK 组件内发出，
+         * §3.3 接收方 4）；WIFI 模式 no-op。 */
+        cdt_transport_sel_poll(now);
 
         /* 链路状态日志（WiFi/WSS 变化即打；新鲜度按 §4 推进） */
         if (s_wss_state != logged_wss) {
