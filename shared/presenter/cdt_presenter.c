@@ -719,7 +719,9 @@ usage_line:
                                 "RESET EXPIRED");
                     }
                     else {
-                        uint32_t s = (uint32_t)row->reset_in_s;
+                        /* s 已钳为 uint32；中间量统一 unsigned int，避免
+                         * unsigned long（64 位平台）与 %u 的类型告警。 */
+                        unsigned int s = (unsigned int)row->reset_in_s;
 
                         if (s >= 3600u) {
                             snprintf(row->reset_text, sizeof(row->reset_text),
