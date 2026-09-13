@@ -47,7 +47,7 @@
 #include "cdt_ui_now.h"
 
 /* PLAN mini 面板行数上限（效果图 1；与 PLAN 页 4 行/页同为 4） */
-#define NOW_PLAN_ROWS 4
+#define NOW_PLAN_ROWS 5   /* 常规态可见 4 行；done/idle/error 紧凑态可见 5 行 */
 
 static lv_obj_t *now_root;
 
@@ -248,11 +248,19 @@ static void apply_status_style(const cdt_view_t *view)
 void cdt_ui_now_apply(const cdt_view_t *view)
 {
     char buf[CDT_VIEW_USAGE_BYTES + 24];
+    bool compact;   /* A0：状态区两档——done/idle/error 紧凑条，working/thinking 大字 */
+    int rows_visible;
 
     if (view == NULL) return;
 
     set_text_ascii(w.project, view->project);
     set_text_ascii(w.voltage, view->voltage_text);
+
+    /* A0：两档判定（警报态恒大字横幅）。compact 时计划面板多显示一行。 */
+    compact = (!view->alarm_mode &&
+               view->status != CDT_THREAD_STATE_WORKING &&
+               view->status != CDT_THREAD_STATE_THINKING);
+    rows_visible = compact ? 5 : 4;
 
     /* 链路提示位（独立于业务状态）：disconnected 提示强度 > stale > source stale */
     if (view->link_disconnected) {
@@ -283,6 +291,33 @@ void cdt_ui_now_apply(const cdt_view_t *view)
         lv_obj_set_style_pad_left(w.status_label, view->status_dot ? 26 : 0, LV_PART_MAIN);
         if (view->status_dot) lv_obj_remove_flag(w.status_dot, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(w.status_dot, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    /* ---- A0（2026-09-14 用户反馈）：状态区两档高度 ----
+     * working/thinking：44px 大字主视觉（效果图 1，一眼看到在干活）；
+     * done/idle/error：26px 紧凑状态条（状态词换 16px 字体），省出的空间
+     * 让计划面板多显示一行（4→5 步）并整体上移。警报态恒 44px 横幅。 */
+    if (compact) {
+        lv_obj_set_size(w.status_box, 384, 26);
+        lv_obj_set_style_text_font(w.status_label, F_TITLE, LV_PART_MAIN);
+        lv_obj_set_pos(w.status_label, 8, 4);
+        lv_obj_set_y(w.status_dot, 5);
+        lv_obj_set_y(w.activity, 88);
+        lv_obj_set_y(w.running, 108);
+        lv_obj_set_y(w.wait, 108);
+        lv_obj_set_size(w.plan_panel, 384, 112);
+        lv_obj_set_y(w.plan_panel, 130);
+    }
+    else {
+        lv_obj_set_size(w.status_box, 384, 44);
+        lv_obj_set_style_text_font(w.status_label, F_STATUS, LV_PART_MAIN);
+        lv_obj_set_pos(w.status_label, 8, 6);
+        lv_obj_set_y(w.status_dot, 14);
+        lv_obj_set_y(w.activity, 106);
+        lv_obj_set_y(w.running, 126);
+        lv_obj_set_y(w.wait, 126);
+        lv_obj_set_size(w.plan_panel, 384, 92);
+        lv_obj_set_y(w.plan_panel, 148);
     }
 
     /* ---- 常规态内容行（警报态整体隐藏，位置让给警报元素）---- */
@@ -320,7 +355,7 @@ void cdt_ui_now_apply(const cdt_view_t *view)
 
     /* ---- PLAN mini 面板：total==0 → 整体隐藏（无 plan 不留空框）；
      * 警报态隐藏（ZC6，警报突出）----
-     * 取 plan_steps 前 4 条（原始顺序）；计数 = completed / total。 */
+     * 取 plan_steps 原始顺序前 N 条（常规 4 / 紧凑 5）；计数 = completed / total。 */
     if (view->plan_present && !view->alarm_mode) {
         int i;
 
@@ -329,7 +364,7 @@ void cdt_ui_now_apply(const cdt_view_t *view)
         cdt_uii_set_text(w.plan_counter, buf);
 
         for (i = 0; i < NOW_PLAN_ROWS; i++) {
-            if (i < (int)view->plan_step_count) {
+            if (i < rows_visible && i < (int)view->plan_step_count) {
                 const cdt_plan_step_row_t *row = &view->plan_steps[i];
 
                 switch ((cdt_step_status_t)row->status) {

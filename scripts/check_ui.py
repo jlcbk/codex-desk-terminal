@@ -402,8 +402,10 @@ def run_frame_rules(view: dict, raster: bytes | None) -> list[str]:
         if f:
             fails.append(f)
     elif page == "now" and status == "ERROR":
-        f = _probe(raster, 9, 90, True)  # 3px 黑色粗框左边
-        f2 = _probe(raster, 200, 90, False)  # 框内白底
+        # A0 紧凑态（2026-09-14）：error 状态框 y=58..84、3px 黑框 → 左边框
+        # 探针 (9,60)；框内白底探针移至框内 (200,70)。
+        f = _probe(raster, 9, 60, True)  # 3px 黑色粗框左边
+        f2 = _probe(raster, 200, 70, False)  # 框内白底
         if f:
             fails.append(f)
         if f2:
