@@ -10,7 +10,10 @@ CONFIG_SPIRAM_SPEED_80M=y
 # 整机集成：StateStore（2×17KiB scratch）+ 16KiB 快照收件槽放 PSRAM 静态区
 # （内部 DRAM 放不下：全量构建后 dram0.bss 溢出 ~25KB；EXT_RAM_BSS_ATTR）。
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# ZC9（P5.2 后半，2026-09-13）：DFS 顶频取 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
+# （CONFIG_PM_DFS_INIT_AUTO），主频随之 160→240（S3 顶频，性能不因 PM 回退；
+# 空闲时 DFS 自动降档至 XTAL 40MHz + tickless 自动 Light Sleep）。
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
@@ -40,3 +43,16 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 # IDF 默认 MIN_MODEM；A/B 数据与默认值理由见 artifacts/board/p52/report.md。
 # 注意：CONNECTED_IDLE 的 modem-sleep 精细联动归 P5.2 后半；功耗实测归 P6.1。
 CONFIG_CDT_WIFI_PS_MODE=1
+
+# ZC9（P5.2 后半，2026-09-13）：CPU 电源管理 —— PM + tickless idle + DFS 自动档。
+# CONFIG_PM_DFS_INIT_AUTO（IDF 5.5.5 esp_pm/pm_impl.c）：启动即配 DFS，
+# 顶频 = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ（240，见上），底频 = XTAL 40MHz；
+# light_sleep_enable 保持 false（自动 Light Sleep 不在本轮范围，见 P5.4）。
+# FREERTOS_USE_TICKLESS_IDLE：空闲时按最近事件截止时间跳过 tick，CPU 停在
+# waiti，不再 1ms tick 空转。
+# 已知开发期副作用（仅日志观感）：DFS 下 UART 控制台可能出乱码；LVGL 时基
+# 走 esp_timer（LV_TICK_CUSTOM）不受影响；SPI Master 传输期经总线锁禁睡/
+# 锁频，LCD 刷新不受 DFS 影响。量化电流实测归 P5.4（仪器未到位）。
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_PM_DFS_INIT_AUTO=y

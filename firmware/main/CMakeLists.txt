@@ -10,6 +10,7 @@
 idf_component_register(
     SRCS "main.c"
          "app_inbox.c"
+         "app_power_idle.c"
          "dev_net.c"
          "lvgl_port.c"
          "transport_sel.c"

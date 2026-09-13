@@ -53,6 +53,11 @@ static const char *ps_mode_name(wifi_ps_type_t ps)
     }
 }
 
+/* ZC9（P5.2 后半）：当前已应用的省电档（-1 = 尚未知，如 start 中 set_ps
+ * 失败）；dev_net_set_idle_ps 据此去重，保证「只在档位真变化时调驱动/打
+ * 日志」（限频不刷屏）。 */
+static int s_ps_applied = -1;
+
 static void set_state(dev_net_state_t st)
 {
     if (s_state != st) {
@@ -126,6 +131,9 @@ esp_err_t dev_net_start(const char *ssid, const char *pass)
     ps = WIFI_PS_MAX_MODEM;
 #endif
     esp_err_t ps_err = esp_wifi_set_ps(ps);
+    if (ps_err == ESP_OK) {
+        s_ps_applied = (int)ps;
+    }
     wifi_ps_type_t ps_now = WIFI_PS_NONE; /* get 回读失败时日志显示 rc；-1 兜底不可行，用 NONE 占位 */
     esp_err_t get_err = esp_wifi_get_ps(&ps_now);
     ESP_LOGI(TAG, "WiFi PS 模式 set=%s(rc=%s) get=%s(rc=%s)（睡眠时长未测，归 P6.1）",
@@ -145,9 +153,36 @@ esp_err_t dev_net_stop(void)
     esp_wifi_disconnect();
     esp_wifi_stop();
     s_started = false;
+    s_ps_applied = -1; /* STA 停用后档位未知；下次 start 重新应用并记录 */
     set_state(DEV_NET_STOPPED);
     ESP_LOGW(TAG, "STA 已停用（LOW BATTERY 无线关闭）");
     return ESP_OK;
+}
+
+/* ZC9（P5.2 后半）：空闲动态降档的档位应用入口。idle_max=true → MAX_MODEM
+ * （拉长 listen interval），false → MIN_MODEM（默认档）。只在档位相对当前
+ * 已应用值真变化时才调 esp_wifi_set_ps 并打一条 INFO（含档位与触发原因；
+ * 调用方 main 的决策已按 need_switch 限频，此处再按档位去重兜底，不刷屏）。
+ * 数据链路优先红线：本函数不做任何业务判断，何时切由 app_power_idle 决策。 */
+esp_err_t dev_net_set_idle_ps(bool idle_max, const char *reason)
+{
+    if (!s_started) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    wifi_ps_type_t want = idle_max ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM;
+    if ((int)want == s_ps_applied) {
+        return ESP_OK; /* 已在该档：不重复 set/log */
+    }
+    esp_err_t err = esp_wifi_set_ps(want);
+    if (err == ESP_OK) {
+        s_ps_applied = (int)want;
+        ESP_LOGI(TAG, "PS -> %s（%s）", ps_mode_name(want),
+                 reason != NULL ? reason : "-");
+    } else {
+        ESP_LOGW(TAG, "PS -> %s 失败: %s", ps_mode_name(want),
+                 esp_err_to_name(err));
+    }
+    return err;
 }
 
 void dev_net_poll(int64_t now_ms)

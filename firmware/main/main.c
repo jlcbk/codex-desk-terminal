@@ -67,6 +67,7 @@
 #endif
 
 #include "app_inbox.h"        /* R4：收件槽跨任务所有权 + 优先提醒槽 */
+#include "app_power_idle.h"   /* ZC9：Wi-Fi 空闲动态降档纯决策（宿主测试单源） */
 #include "app_power_policy.h" /* R3a/R3b：电源动作分发策略（宿主测试单源） */
 #include "cdt_battery.h"
 #include "cdt_key.h"
@@ -108,6 +109,15 @@ uint32_t cdt_crc32(const uint8_t *data, size_t len);
 #define LINK_DEAD_MS 150000u           /* INTERFACES §4：disconnected 并重连 */
 #define WIFI_WAIT_IP_MS 15000          /* WiFi 取 IP 后再起 WSS（超时也起，靠退避） */
 
+/* ZC9 空闲动态降档编译门（P5.2 后半）：仅在 MIN_MODEM 基线（产品默认
+ * CDT_WIFI_PS_MODE=1）启用。NONE/MAX 显式配置视为「钉死档位」的运维选择，
+ * 动态降档不覆盖；离线演示构建无无线，不参与。 */
+#if CDT_HAS_NET_CONFIG && defined(CONFIG_CDT_WIFI_PS_MODE) && CONFIG_CDT_WIFI_PS_MODE == 1
+#define APP_IDLE_DOWNGRADE_ENABLED 1
+#else
+#define APP_IDLE_DOWNGRADE_ENABLED 0
+#endif
+
 /* ------------------------------------------------------------------ */
 /* 大对象静态化（不占任务栈；store 内含 2×17KiB scratch）。store ~34KiB + */
 /* 收件槽三缓冲 3×16KiB（普通/优先/消费者独享，R4）→ PSRAM 静态区         */
@@ -135,6 +145,11 @@ static bool s_have_sample;
 static bool s_have_rx;
 static uint32_t s_last_rx_ms;   /* 单调 ms；收到合法新 seq 快照时刷新（§4） */
 static uint32_t s_applied_count;
+#if APP_IDLE_DOWNGRADE_ENABLED
+static uint32_t s_last_key_ms;        /* ZC9：最近按键单调 ms（0=无；handle_key 刷新） */
+static bool s_idle_ps_max_applied;    /* ZC9：已应用到 MAX（调用侧镜像；dev_net 内还有档位去重） */
+static int64_t s_idle_max_entered_ms; /* ZC9：最近一次切 MAX 的单调 ms（0=从未；回 MIN 后保留供迟滞） */
+#endif
 
 /* 静音（ACK=本地静音/已读，绝不等于批准 Codex 操作）：记录静音时选中线程
  * 的 turn_id；新 turn（不同 turn_id 且有新 pending）可再次提醒（§6）。 */
@@ -287,10 +302,12 @@ static void render(int64_t now, const char *why)
 /* ------------------------------------------------------------------ */
 static void handle_key(cdt_key_hw_event_t ev, int64_t now, bool *need_render)
 {
-    (void)now;
     if (ev != CDT_KEY_EVENT_KEY_SHORT && ev != CDT_KEY_EVENT_KEY_LONG) {
         return; /* BOOT 键保留下载用途（§1），不接业务 */
     }
+#if APP_IDLE_DOWNGRADE_ENABLED
+    s_last_key_ms = (uint32_t)now; /* ZC9：真实按键活动 = 空闲降档的立即回 MIN 源 */
+#endif
     cdt_key_event_t key = ev == CDT_KEY_EVENT_KEY_SHORT ? CDT_KEY_SHORT_PRESS
                                                         : CDT_KEY_LONG_PRESS;
     uint32_t acts = cdt_nav_key(&s_nav, &s_view, key);
@@ -626,6 +643,12 @@ static void start_radio(void)
         return;
     }
     s_radio_started = true;
+#if APP_IDLE_DOWNGRADE_ENABLED
+    /* ZC9：dev_net_start 已按 CDT_WIFI_PS_MODE（MIN 基线）应用省电档；
+     * 降档状态机随无线重启复位（动态 MAX 只在本次连接会话内演化）。 */
+    s_idle_ps_max_applied = false;
+    s_idle_max_entered_ms = 0;
+#endif
 
     /* 等 IP（≤15s）；超时也起 WSS，靠其冻结退避自愈 */
     int waited = 0;
@@ -698,6 +721,48 @@ static void wss_resync(void)
                  esp_err_to_name(sr));
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* ZC9 空闲动态降档（P5.2 后半）：无合法新快照且无按键持续达阈值 →        */
+/* MAX_MODEM；任何新快照/按键 → 立即回 MIN_MODEM（数据链路优先，红线）。   */
+/* 决策单源 app_power_idle.c（宿主测试同源编译）；esp_wifi_set_ps 应用、  */
+/* 档位去重与 INFO 日志在 dev_net.c（dev_net_set_idle_ps）。状态镜像       */
+/* s_idle_* 见文件头部静态区；编译门 APP_IDLE_DOWNGRADE_ENABLED 见文件头。 */
+/* 运行期门：无线已启且从未收到合法快照不降档（首包等待期保持 MIN）。      */
+/* ------------------------------------------------------------------ */
+#if APP_IDLE_DOWNGRADE_ENABLED
+
+static void cdt_idle_downgrade_tick(int64_t now)
+{
+    if (!s_radio_started || !s_have_rx) {
+        return;
+    }
+    int64_t threshold = (int64_t)CONFIG_CDT_IDLE_DOWNGRADE_MIN * 60000;
+    /* app_power_idle.h 档位状态编码：>0=正处于 MAX（值为进入时刻）；
+     * <0=不在 MAX（绝对值=最近一次进入时刻，供再入迟滞）。 */
+    int64_t state = s_idle_ps_max_applied ? s_idle_max_entered_ms
+                                          : -s_idle_max_entered_ms;
+    app_power_idle_verdict_t v = app_power_idle_decide(
+        now, (int64_t)s_last_rx_ms, (int64_t)s_last_key_ms, threshold, state);
+    bool want_max = v.target == APP_POWER_IDLE_PS_MAX;
+    if (!v.need_switch || want_max == s_idle_ps_max_applied) {
+        return; /* 档位无变化：不调驱动不打日志（限频不刷屏） */
+    }
+    /* 触发原因（日志用）：回 MIN 取较新活动源；升 MAX 即空闲达标。 */
+    const char *reason = want_max
+                             ? "空闲>=阈值"
+                             : ((int64_t)s_last_rx_ms >= (int64_t)s_last_key_ms
+                                    ? "快照活动"
+                                    : "按键活动");
+    if (dev_net_set_idle_ps(want_max, reason) == ESP_OK) {
+        s_idle_ps_max_applied = want_max;
+        if (want_max) {
+            s_idle_max_entered_ms = now;
+        }
+        /* 回 MIN：s_idle_max_entered_ms 保留（再入迟滞基准） */
+    }
+}
+#endif /* APP_IDLE_DOWNGRADE_ENABLED */
 #endif /* CDT_HAS_NET_CONFIG */
 
 /* ------------------------------------------------------------------ */
@@ -849,6 +914,12 @@ static void app_task(void *arg)
         /* ZC11：BLE 模式重组器超时巡检（3s 进展/30s 整包，NACK 组件内发出，
          * §3.3 接收方 4）；WIFI 模式 no-op。 */
         cdt_transport_sel_poll(now);
+
+#if APP_IDLE_DOWNGRADE_ENABLED
+        /* ZC9 空闲动态降档（P5.2 后半）：每拍纯决策；档位切换（esp_wifi_
+         * set_ps + INFO 日志）只在 need_switch 时发生，天然限频。 */
+        cdt_idle_downgrade_tick(now);
+#endif
 
         /* 链路状态日志（WiFi/WSS 变化即打；新鲜度按 §4 推进） */
         if (s_wss_state != logged_wss) {

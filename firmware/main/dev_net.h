@@ -37,6 +37,13 @@ esp_err_t dev_net_start(const char *ssid, const char *pass);
 /* 主动停用（LOW BATTERY 无线关闭路径；CRITICAL 后不再重连）。 */
 esp_err_t dev_net_stop(void);
 
+/* ZC9（P5.2 后半）空闲动态降档：应用 Wi-Fi 省电档。
+ * idle_max=true → WIFI_PS_MAX_MODEM（空闲降档），false → WIFI_PS_MIN_MODEM
+ * （默认/活动档）。reason 为触发原因字符串（进 INFO 日志，可 NULL）。
+ * 档位相对当前已应用值无变化时不调驱动不打日志（限频）。无线未启动返回
+ * ESP_ERR_INVALID_STATE。决策逻辑单源 app_power_idle.c（main 周期调用）。 */
+esp_err_t dev_net_set_idle_ps(bool idle_max, const char *reason);
+
 /* 主循环周期调用：驱动断开重连退避节奏（非阻塞；到点才 esp_wifi_connect）。 */
 void dev_net_poll(int64_t now_ms);
 
