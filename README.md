@@ -89,6 +89,8 @@ uv run --python 3.12 --with websockets==17.1 python3 scripts/bridge_serve_zcode.
   --token-file config/local/device_token
 ```
 
+同一观察源也可走 BLE（可选，Mac 为 central 推给设备；配对加密即信道安全，无 token/证书）：`uv run --python 3.12 --with bleak==3.0.2 python3 scripts/bridge_serve_ble.py --device-name CodexDT`（真机接入待 P3.4 B2 验证）。
+
 **Codex 模式**
 
 ```sh
