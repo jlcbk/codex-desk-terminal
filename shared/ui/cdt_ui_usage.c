@@ -204,7 +204,7 @@ void cdt_ui_usage_apply(const cdt_view_t *view)
             snprintf(more, sizeof(more), "+%u MORE",
                      (unsigned)(view->usage_count - USAGE_BLOCKS));
             if (buf[0] != '\0') {
-                char merged[24];
+                char merged[40]; /* 5 + 2 + "+65535 MORE"=13 → 40 富余，免截断告警 */
                 snprintf(merged, sizeof(merged), "%s  %s", buf, more);
                 cdt_uii_set_text(us.more, merged);
             }
