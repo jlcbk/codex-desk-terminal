@@ -70,6 +70,9 @@ typedef struct {
     /* 长按静音当前提醒的 attention 标识（§4 muted_attention_id，可 null）*/
     bool muted_attention_present;
     char muted_attention_id[CDT_MAX_ID_BYTES + 1];
+    /* 本地时区偏移（分钟，东半球为正）：present 用 generated_at_ms+偏移渲染
+     * 顶栏时钟（协议 *_at_ms 恒 UTC，仅显示换算，不参与任何状态判断）。 */
+    int16_t tz_offset_min;
 } cdt_runtime_t;
 
 #endif /* CDT_RUNTIME_H */

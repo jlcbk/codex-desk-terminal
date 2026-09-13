@@ -1395,6 +1395,9 @@ int main(int argc, char **argv)
 
     parse_args(argc, argv, &opts);
 
+    /* 顶栏时钟时区固定 0：确定性回放（真机经 Kconfig CDT_TZ_OFFSET_MIN 注入） */
+    runtime.tz_offset_min = 0;
+
     /* --scenario：加载期全量预检（违规 exit 1，不出帧；契约 §3.2） */
     if (opts.scenario != NULL) {
         g_scenario_mode = 1;

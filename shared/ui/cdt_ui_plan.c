@@ -179,7 +179,14 @@ void cdt_ui_plan_apply(const cdt_view_t *view, const cdt_nav_t *nav)
             }
         }
 
-        snprintf(buf, sizeof(buf), "%u/%u", (unsigned)(sub + 1u), (unsigned)pages);
+        /* A0：顶栏时钟前缀（效果图 4 顶栏时间位） */
+        if (view->clock_text[0] != '\0') {
+            snprintf(buf, sizeof(buf), "%s  %u/%u", view->clock_text,
+                     (unsigned)(sub + 1u), (unsigned)pages);
+        }
+        else {
+            snprintf(buf, sizeof(buf), "%u/%u", (unsigned)(sub + 1u), (unsigned)pages);
+        }
         cdt_uii_set_text(pl.sub_ind, buf);
         cdt_uii_page_ind_set(pl.page_ind, "PLAN", sub + 1, pages);
     }

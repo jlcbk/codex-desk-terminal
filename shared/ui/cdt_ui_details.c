@@ -20,6 +20,7 @@
 
 typedef struct {
     lv_obj_t *root;
+    lv_obj_t *right;     /* A0：标题行右侧顶栏时钟（效果图 6 时间位） */
     lv_obj_t *banner;
     lv_obj_t *banner_label;
     lv_obj_t *rows[DETAILS_ROW_COUNT];
@@ -45,7 +46,7 @@ void cdt_ui_details_create(void)
     int i;
 
     dt.root = cdt_uii_page_root();
-    cdt_uii_title_row(dt.root, "DETAILS", NULL, NULL);
+    cdt_uii_title_row(dt.root, "DETAILS", NULL, &dt.right);
     dt.banner = cdt_uii_link_banner(dt.root, &dt.banner_label);
 
     for (i = 0; i < DETAILS_ROW_COUNT; i++) {
@@ -64,6 +65,7 @@ void cdt_ui_details_apply(const cdt_view_t *view)
 
     if (view == NULL) return;
 
+    cdt_uii_set_text(dt.right, view->clock_text); /* A0：顶栏时钟（空则清空） */
     cdt_uii_link_banner_apply(dt.banner, dt.banner_label, view);
 
     /* label 列固定 14 显示列（ASCII 8×16），值列对齐；值由 presenter 截断。

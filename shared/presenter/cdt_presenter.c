@@ -336,9 +336,33 @@ void cdt_present(const cdt_app_state_t *state,
     /* ---- 电压（§7.1 UI 优先显示电压；invalid → "--"）---- */
     view->battery_valid = rt->battery_valid;
     view->usable_percent = rt->usable_percent;
+
+    /* ---- 顶栏时钟（generated_at_ms + 设备时区偏移；absent/无快照 → 空串）----
+     * 协议 *_at_ms 恒 UTC；偏移来自 DeviceRuntime（设备 Kconfig / 模拟器 0），
+     * 不引入墙钟语义——只做显示换算，不参与任何状态判断。 */
+    if (state != NULL && state->generated_at_ms_present) {
+        int64_t local_min = (state->generated_at_ms +
+                             (int64_t)rt->tz_offset_min * 60000LL) / 60000LL;
+        int64_t day_min = ((local_min % 1440LL) + 1440LL) % 1440LL;
+        snprintf(view->clock_text, sizeof(view->clock_text), "%02d:%02d",
+                 (int)(day_min / 60), (int)(day_min % 60));
+    }
+
     if (rt->battery_valid) {
-        snprintf(view->voltage_text, sizeof(view->voltage_text), "%u.%02uV",
+        char volt[8];
+        snprintf(volt, sizeof(volt), "%u.%02uV",
                  (unsigned)(rt->battery_mv / 1000u), (unsigned)((rt->battery_mv % 1000u) / 10u));
+        if (view->clock_text[0] != '\0') {
+            snprintf(view->voltage_text, sizeof(view->voltage_text), "%s %s",
+                     view->clock_text, volt);
+        }
+        else {
+            snprintf(view->voltage_text, sizeof(view->voltage_text), "%s", volt);
+        }
+    }
+    else if (view->clock_text[0] != '\0') {
+        snprintf(view->voltage_text, sizeof(view->voltage_text), "%s",
+                 view->clock_text);
     }
     else {
         set_str(view->voltage_text, sizeof(view->voltage_text), "--");

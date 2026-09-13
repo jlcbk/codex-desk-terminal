@@ -256,6 +256,7 @@ static void runtime_update(int64_t now)
     s_runtime.last_rx_monotonic_ms = s_last_rx_ms;
     s_runtime.selected_page = s_nav.page;
     s_runtime.muted_attention_present = s_muted;
+    s_runtime.tz_offset_min = (int16_t)CONFIG_CDT_TZ_OFFSET_MIN; /* 顶栏时钟显示换算 */
 }
 
 static cdt_page_t s_logged_page; /* 页面切换事件日志 */

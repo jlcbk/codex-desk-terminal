@@ -48,7 +48,8 @@ extern "C" {
 #define CDT_VIEW_STATUS_BYTES 16   /* "LOW BATTERY"=11B */
 #define CDT_VIEW_PLAN_BYTES 24     /* "PLAN 65535/65535"=16B */
 #define CDT_VIEW_ELAPSED_BYTES 16  /* hh:mm:ss（小时可 >99） */
-#define CDT_VIEW_VOLTAGE_BYTES 8   /* "65.53V"=6B */
+#define CDT_VIEW_VOLTAGE_BYTES 16  /* "22:15 3.90V"=12B（顶栏右槽=时钟+电压） */
+#define CDT_VIEW_CLOCK_BYTES 6     /* "23:59"=5B */
 
 /* ---- P2.2：AGENTS 页（§6：排序、总数/裁剪标记）----
  * ZC8：AGENTS 改两行式（第一行 状态徽标+项目名+行尾 elapsed；第二行 活动文本），
@@ -173,7 +174,8 @@ typedef struct {
     bool elapsed_present;  /* RUNNING FOR 行可见性（有任务） */
 
     /* ---- 电池（§7.1：UI 优先显示电压；百分比仅为估算）---- */
-    char voltage_text[CDT_VIEW_VOLTAGE_BYTES]; /* "3.90V"；battery_valid=false → "--" */
+    char clock_text[CDT_VIEW_CLOCK_BYTES]; /* "HH:MM"（generated_at+TZ）；空 → 页头隐藏 */
+    char voltage_text[CDT_VIEW_VOLTAGE_BYTES]; /* "22:15 3.90V"；battery_valid=false → 时钟或"--" */
     bool battery_valid;
     uint8_t usable_percent; /* 0-100 线性估算透传；battery_valid=false 时无意义 */
 

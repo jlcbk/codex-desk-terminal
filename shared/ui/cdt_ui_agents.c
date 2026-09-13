@@ -157,8 +157,15 @@ void cdt_ui_agents_apply(const cdt_view_t *view, const cdt_nav_t *nav)
     cdt_uii_link_banner_apply(ag.banner, ag.banner_label, view);
 
     /* ZC8：顶栏右侧显示会话总数（"SESSIONS <threads_total>"，总数语义；
-     * 底栏 PAGE: AGENTS i/n 保留翻页指示）。空态同样显示（0 也是真值）。 */
-    snprintf(buf, sizeof(buf), "SESSIONS %u", (unsigned)view->threads_total);
+     * 底栏 PAGE: AGENTS i/n 保留翻页指示）。空态同样显示（0 也是真值）。
+     * A0：顶栏时钟前缀（generated_at+TZ，效果图 3 顶栏时间位）。 */
+    if (view->clock_text[0] != '\0') {
+        snprintf(buf, sizeof(buf), "%s  SESSIONS %u",
+                 view->clock_text, (unsigned)view->threads_total);
+    }
+    else {
+        snprintf(buf, sizeof(buf), "SESSIONS %u", (unsigned)view->threads_total);
+    }
     cdt_uii_set_text(ag.sub_ind, buf);
 
     if (view->agents_count == 0) {

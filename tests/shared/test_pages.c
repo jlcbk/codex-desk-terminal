@@ -804,8 +804,8 @@ static void test_forced_page_priority(void)
           "CRITICAL 强制 LOW BATTERY 页（任意 selected_page 下）", "");
     check(strcmp(v.status_label, "LOW BATTERY") == 0,
           "电池优先于 NEEDS YOU（状态词覆盖）", v.status_label);
-    check(strcmp(v.voltage_text, "3.90V") == 0,
-          "强制页仍显示电压（§6 低压页含电压）", v.voltage_text);
+    check(strstr(v.voltage_text, "3.90V") != NULL,
+          "强制页仍显示电压（§6 低压页含电压；右槽可带顶栏时钟前缀）", v.voltage_text);
 
     r.power_state = CDT_POWER_SLEEP_PREP;
     cdt_present(&s, &r, 30000, &v);

@@ -187,16 +187,34 @@ void cdt_ui_usage_apply(const cdt_view_t *view)
         }
     }
 
-    /* 窗口块上限诚实标注：>2 组时标题行右侧 "+N MORE"（不静默丢弃） */
-    if (view->usage_count > USAGE_BLOCKS) {
+    /* 窗口块上限诚实标注：>2 组时标题行右侧 "+N MORE"（不静默丢弃）。
+     * A0：顶栏时钟占用右槽（效果图 5 顶栏时间位），MORE 并存。 */
+    {
         char buf[16];
 
-        snprintf(buf, sizeof(buf), "+%u MORE",
-                 (unsigned)(view->usage_count - USAGE_BLOCKS));
-        cdt_uii_set_text(us.more, buf);
-    }
-    else {
-        cdt_uii_set_text(us.more, "");
+        if (view->clock_text[0] != '\0') {
+            snprintf(buf, sizeof(buf), "%s", view->clock_text);
+        }
+        else {
+            buf[0] = '\0';
+        }
+        if (view->usage_count > USAGE_BLOCKS) {
+            char more[16];
+
+            snprintf(more, sizeof(more), "+%u MORE",
+                     (unsigned)(view->usage_count - USAGE_BLOCKS));
+            if (buf[0] != '\0') {
+                char merged[24];
+                snprintf(merged, sizeof(merged), "%s  %s", buf, more);
+                cdt_uii_set_text(us.more, merged);
+            }
+            else {
+                cdt_uii_set_text(us.more, more);
+            }
+        }
+        else {
+            cdt_uii_set_text(us.more, buf);
+        }
     }
 
     /* ZC7：token 表（CONTEXT=DETAILS 同源三态；INPUT/OUTPUT/CACHED K 格式） */

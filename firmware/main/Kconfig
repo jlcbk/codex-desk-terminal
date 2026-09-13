@@ -18,4 +18,12 @@ menu "CodexDT dev net (P5.2)"
             MAX_MODEM=每 listen_interval 唤醒一次（listen_interval 默认
             3 beacon，未改），只作 A/B 数据点，不作为默认。
 
+    config CDT_TZ_OFFSET_MIN
+        int "本地时区偏移（分钟，东半球为正；中国=480）"
+        range -840 840
+        default 480
+        help
+            顶栏时钟 = 快照 generated_at_ms（UTC）+ 该偏移，仅显示换算，
+            不参与任何状态判断（协议时间语义不变）。模拟器固定 0（确定性）。
+
 endmenu

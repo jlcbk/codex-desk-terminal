@@ -432,12 +432,16 @@ def _view(rec) -> dict:
 
 def semantic_S01(records, raster_by_idx) -> list[str]:
     v = _view(records[-1])
+    # A0 时钟收编：右槽=时钟+电压组合；未注入电池时合法内容=时钟或 "--"，
+    # 唯一禁止项是出现电压读数（不编造）。
+    voltage = v.get("voltage", "")
     return [
         *( ["末帧状态词非 IDLE"] if v.get("status") != "IDLE" else [] ),
         *( ["无任务项目应显示 --"] if v.get("project") != "--" else [] ),
         *( ["无任务活动应显示 --"] if v.get("activity") != "--" else [] ),
         *( ["无任务时长应显示 --"] if v.get("elapsed") != "--" else [] ),
-        *( ["未注入电池电压应显示 --"] if v.get("voltage") != "--" else [] ),
+        *( [f"未注入电池不得出现电压读数，实 {voltage}"]
+           if re.search(r"\d\.\d{2}V", voltage) else [] ),
         *( ["额度缺失应显示 --"] if v.get("usage") == "--" else [] ),
     ]
 
@@ -553,12 +557,12 @@ def semantic_S09(records, raster_by_idx) -> list[str]:
         v = _view(lw)
         if v.get("status") != "NEEDS YOU" or v.get("page") != "now":
             fails.append("LOW_WARN 应保持 NEEDS YOU 业务页")
-        if v.get("voltage") != "3.70V":
-            fails.append(f"低压警告电压应 3.70V，实 {v.get('voltage')}")
+        if "3.70V" not in v.get("voltage", ""):
+            fails.append(f"低压警告电压应含 3.70V（右槽可带时钟前缀），实 {v.get('voltage')}")
     else:
         fails.append("缺 low_warn3700 checkpoint")
-    if ch and _view(ch).get("voltage") != "3.60V":
-        fails.append("critical_hold 计时中电压应 3.60V")
+    if ch and "3.60V" not in _view(ch).get("voltage", ""):
+        fails.append("critical_hold 计时中电压应含 3.60V")
     if fp:
         v = _view(fp)
         if v.get("page") != "low_battery" or not v.get("forced"):
@@ -584,18 +588,20 @@ def semantic_S10(records, raster_by_idx) -> list[str]:
     fails = []
     vr, iv = _rec(records, "valid_ref"), _rec(records, "invalid_sample")
     oor = _rec(records, "out_of_range")
-    if vr and _view(vr).get("voltage") != "3.90V":
+    # A0 时钟收编：右槽=时钟+电压组合；无有效电压时合法内容=时钟或 "--"，
+    # 禁止出现电压读数（不编造）。
+    if vr and not re.search(r"\d\.\d{2}V", _view(vr).get("voltage", "")):
         fails.append("有效采样应显示 3.90V")
     if iv:
         v = _view(iv)
-        if v.get("voltage") != "--":
-            fails.append(f"无效采样电压应 --，实 {v.get('voltage')}")
+        if re.search(r"\d\.\d{2}V", v.get("voltage", "")):
+            fails.append(f"无效采样不得出现电压读数，实 {v.get('voltage')}")
     else:
         fails.append("缺 invalid_sample checkpoint")
     if oor:
         v = _view(oor)
-        if v.get("voltage") != "--":
-            fails.append(f"范围外采样电压应 --，实 {v.get('voltage')}")
+        if re.search(r"\d\.\d{2}V", v.get("voltage", "")):
+            fails.append(f"范围外采样不得出现电压读数，实 {v.get('voltage')}")
     else:
         fails.append("缺 out_of_range 记录")
     return fails
@@ -660,19 +666,24 @@ def semantic_S13(records, raster_by_idx) -> list[str]:
     p1 = _rec(records, "agents_p1")
     if p1:
         v = _view(p1)
+        # 排序语义：needs_you→error→working→done→idle（dump 列全量线程状态）
         expect = ["NEEDS YOU", "NEEDS YOU", "ERROR", "WORKING", "WORKING",
                   "DONE", "IDLE", "IDLE"]
         if v.get("agents_states") != expect:
             fails.append("AGENTS 排序不符（needs_you→error→working→done→idle）")
-        if v.get("agents_pages") != 2 or v.get("agents_hidden") != 2:
-            fails.append("分页/裁剪标记应为 2 页 + 还有 2 个")
+        # ZC8：每页 4→3 行（两行式布局）→ 8 线程 3 页、首页后还有 2 个
+        if v.get("agents_pages") != 3 or v.get("agents_hidden") != 2:
+            fails.append("分页/裁剪标记应为 3 页 + 还有 2 个（每页 3 行）")
     else:
         fails.append("缺 agents_p1 checkpoint")
     p2 = _rec(records, "agents_p2")
     if p2 and _view(p2).get("page") != "agents":
         fails.append("第二子页应仍在 AGENTS")
-    nm = _rec(records, "next_main")
-    if nm and _view(nm).get("page") != "plan":
+    p3 = _rec(records, "agents_p3")
+    if p3 and _view(p3).get("page") != "agents":
+        fails.append("第三子页应仍在 AGENTS（ZC8 每页 3 行 → 3 子页）")
+    np = _rec(records, "next_plan")
+    if np and _view(np).get("page") != "plan":
         fails.append("末子页后应切 PLAN（按选中任务生成）")
     return fails
 

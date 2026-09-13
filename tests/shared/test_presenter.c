@@ -593,6 +593,47 @@ static void test_details_fields(void)
           "无快照 → DETAILS 行 \"--\"", v.model_text);
 }
 
+/* ---- A0：顶栏时钟（generated_at_ms + runtime 时区偏移，仅显示换算）---- */
+static void test_header_clock(void)
+{
+    cdt_app_state_t s = base_state();
+    cdt_runtime_t r = base_rt();
+    cdt_view_t v;
+
+    /* generated_at 缺失 → 时钟空串；电压独占右槽 */
+    cdt_present(&s, &r, 40000, &v);
+    check(v.clock_text[0] == '\0', "generated_at 缺失 → 时钟空串", v.clock_text);
+
+    /* tz=0：UTC 直接渲染（模拟器确定性路径）。
+     * generated_at=1789297800000 = 11:10:00 UTC。 */
+    s.generated_at_ms_present = true;
+    s.generated_at_ms = (int64_t)1789297800000LL;
+    r.battery_valid = true;
+    r.battery_mv = 3900;
+    r.tz_offset_min = 0;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.clock_text, "11:10") == 0, "tz=0 → UTC 11:10", v.clock_text);
+    check(strcmp(v.voltage_text, "11:10 3.90V") == 0,
+          "右槽组合=\"时钟 电压\"", v.voltage_text);
+
+    /* tz=+480（中国）：11:10 UTC → 19:10 同日 */
+    r.tz_offset_min = 480;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.clock_text, "19:10") == 0, "tz=480 → 19:10", v.clock_text);
+
+    /* tz=-60 → 10:10（负偏移，同日内） */
+    r.tz_offset_min = -60;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.clock_text, "10:10") == 0, "tz=-60 → 10:10", v.clock_text);
+
+    /* 无电池电压 → 时钟独占右槽 */
+    r.battery_valid = false;
+    r.tz_offset_min = 480;
+    cdt_present(&s, &r, 40000, &v);
+    check(strcmp(v.voltage_text, "19:10") == 0, "无电压 → 时钟独占右槽",
+          v.voltage_text);
+}
+
 int main(void)
 {
     test_priority_low_battery();
@@ -608,6 +649,7 @@ int main(void)
     test_truncation();
     test_attention_and_mute();
     test_details_fields();
+    test_header_clock();
     printf("\n汇总: %d PASS, %d FAIL\n", passes, failures);
     return failures == 0 ? 0 : 1;
 }
