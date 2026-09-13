@@ -6,7 +6,7 @@ from bridge.sources import mock, replay
 from bridge.state.engine import StateEngine
 
 import bridge.events as ev
-from conftest import REPO_ROOT, assert_invariants, encode
+from cdt_bridge_shared import REPO_ROOT, assert_invariants, encode
 
 
 def test_every_mock_snapshot_validates(validator, lifecycle_fixtures):

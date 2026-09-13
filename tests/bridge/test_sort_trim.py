@@ -4,7 +4,7 @@ import bridge.events as ev
 from bridge.state.engine import StateEngine
 from bridge.state.render import clamp_utf8
 
-from conftest import encode
+from cdt_bridge_shared import encode
 
 
 def run(engine, *events):

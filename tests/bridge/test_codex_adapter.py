@@ -23,7 +23,7 @@ import pytest
 
 from bridge import __main__ as bridge_main
 from bridge.sources import codex as codex_mod
-from conftest import REPO_ROOT, assert_invariants
+from cdt_bridge_shared import REPO_ROOT, assert_invariants
 
 SAMPLES = REPO_ROOT / "docs" / "proto-samples"
 

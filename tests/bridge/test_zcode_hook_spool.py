@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
+from cdt_bridge_shared import REPO_ROOT
 
 SCRIPT_PATH = REPO_ROOT / "scripts" / "zcode_hook_spool.py"
 

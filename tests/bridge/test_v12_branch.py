@@ -252,7 +252,7 @@ def test_observer_defaults_to_real_resolver():
 
 def test_observer_branch_flows_into_snapshot(tmp_path):
     """spool SessionStart(cwd) → thread_started(branch) → 快照 threads[].branch。"""
-    from conftest import assert_invariants
+    from cdt_bridge_shared import assert_invariants
 
     root = tmp_path / "zcode"
     (root / "rollout").mkdir(parents=True)

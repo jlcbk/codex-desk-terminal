@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from conftest import REPO_ROOT, assert_invariants
+from cdt_bridge_shared import REPO_ROOT, assert_invariants
 
 
 def run_cli(*args):

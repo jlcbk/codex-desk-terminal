@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 
 from bridge import serve_codex as svc
-from conftest import REPO_ROOT, assert_invariants
+from cdt_bridge_shared import REPO_ROOT, assert_invariants
 
 SCRIPT_PATH = REPO_ROOT / "scripts" / "bridge_serve_codex.py"
 

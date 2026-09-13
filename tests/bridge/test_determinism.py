@@ -6,7 +6,7 @@ import bridge.events as ev
 from bridge.sources import mock, replay
 from bridge.state.engine import StateEngine
 
-from conftest import REPO_ROOT, encode
+from cdt_bridge_shared import REPO_ROOT, encode
 
 
 def test_mock_lifecycle_byte_identical_across_runs():

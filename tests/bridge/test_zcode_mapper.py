@@ -28,7 +28,7 @@ import pytest
 
 from bridge import events as ev
 from bridge.sources import zcode as zc
-from conftest import FrozenZcodeWallClock
+from cdt_bridge_shared import FrozenZcodeWallClock
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "zcode"

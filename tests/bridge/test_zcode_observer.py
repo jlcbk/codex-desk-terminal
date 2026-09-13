@@ -28,7 +28,7 @@ import pytest
 
 from bridge.sources import zcode as zc
 from bridge.state.engine import SOURCE_ZCODE_OBSERVED, StateEngine
-from conftest import FrozenZcodeWallClock, assert_invariants
+from cdt_bridge_shared import FrozenZcodeWallClock, assert_invariants
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures" / "zcode"

@@ -41,7 +41,7 @@ from bridge.transports.wss import (
     WssServer,
     WssServerConfig,
 )
-from conftest import REPO_ROOT, assert_invariants, encode
+from cdt_bridge_shared import REPO_ROOT, assert_invariants, encode
 
 SCRIPT_PATH = REPO_ROOT / "scripts" / "bridge_serve_zcode.py"
 ART = REPO_ROOT / "artifacts" / "zcode_serve"
